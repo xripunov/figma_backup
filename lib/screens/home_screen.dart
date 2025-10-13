@@ -1,10 +1,13 @@
+import 'dart:async';
+
 import 'package:file_picker/file_picker.dart';
+import 'package:figma_bckp/models/backup_group.dart';
+import 'package:figma_bckp/models/backup_item.dart';
 import 'package:figma_bckp/models/figma_file.dart';
 import 'package:figma_bckp/screens/backup_screen.dart';
 import 'package:figma_bckp/screens/settings_screen.dart';
 import 'package:figma_bckp/services/figma_api_service.dart';
 import 'package:figma_bckp/services/settings_service.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
@@ -17,49 +20,70 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  static const double _breakpoint = 768.0;
+
   late final FigmaApiService _figmaApiService;
   late final SettingsService _settingsService;
   final _urlController = TextEditingController();
 
-  List<String> _fileKeys = [];
-  final Map<String, FigmaFile?> _fileDetails = {};
+  List<BackupGroup> _groups = [];
+  BackupGroup? _activeGroup;
+  final Map<String, FigmaFile?> _fileDetailsCache = {};
+
   bool _isInitialLoading = true;
   String? _errorMessage;
+  Timer? _debounce;
 
   @override
   void initState() {
     super.initState();
     _figmaApiService = Provider.of<FigmaApiService>(context, listen: false);
     _settingsService = Provider.of<SettingsService>(context, listen: false);
-    _loadInitialKeysAndFetchDetails();
+    _loadInitialData();
   }
 
   @override
   void dispose() {
     _urlController.dispose();
+    _debounce?.cancel();
     super.dispose();
   }
 
-  Future<void> _loadInitialKeysAndFetchDetails() async {
+  Future<void> _loadInitialData() async {
     setState(() {
       _isInitialLoading = true;
       _errorMessage = null;
     });
 
-    _fileKeys = await _settingsService.getFileKeys();
-    
-    for (var key in _fileKeys) {
-      _fileDetails[key] = FigmaFile(key: key, name: '##LOADING##', lastModified: '', projectName: '');
+    try {
+      _groups = await _settingsService.getBackupGroups();
+    } catch (e) {
+      debugPrint("Error loading backup groups: $e");
+      _groups = [];
+      // Optionally, show an error message to the user
+    }
+    final activeGroupId = await _settingsService.getActiveGroupId();
+
+    if (_groups.isNotEmpty) {
+      _activeGroup = _groups.firstWhere(
+        (g) => g.id == activeGroupId,
+        orElse: () => _groups.first,
+      );
+      await _settingsService.setActiveGroupId(_activeGroup!.id);
+    } else {
+      _activeGroup = null;
     }
 
     setState(() {
       _isInitialLoading = false;
     });
 
-    _fetchDetailsForAllFiles();
+    if (_activeGroup != null) {
+      _fetchDetailsForActiveGroup();
+    }
   }
 
-  Future<void> _fetchDetailsForAllFiles() async {
+  Future<void> _fetchDetailsForActiveGroup({bool force = false}) async {
     final token = await _settingsService.getToken();
     if (token == null || token.isEmpty) {
       setState(() {
@@ -73,19 +97,29 @@ class _HomeScreenState extends State<HomeScreen> {
       });
       return;
     }
+    _errorMessage = null;
 
-    // --- ИСПРАВЛЕНИЕ: Создаем копию списка ключей ---
-    final keysToFetch = List<String>.from(_fileKeys);
-    for (final key in keysToFetch) {
-      // Проверяем, не был ли ключ удален, пока мы загружали другие
-      if (!_fileKeys.contains(key)) continue;
+    if (_activeGroup == null) return;
+
+    // Set loading state for all items in the group
+    for (var item in _activeGroup!.items) {
+       if (force || !_fileDetailsCache.containsKey(item.key)) {
+        _fileDetailsCache[item.key] = FigmaFile(key: item.key, name: '##LOADING##', lastModified: '', projectName: '');
+      }
+    }
+    if(mounted) setState(() {});
+
+
+    final itemsToFetch = List<BackupItem>.from(_activeGroup!.items);
+    for (final item in itemsToFetch) {
+      if (!_activeGroup!.items.any((i) => i.key == item.key)) continue;
 
       try {
-        final details = await _figmaApiService.getFullFileInfo(key, token);
-        _fileDetails[key] = details;
+        final details = await _figmaApiService.getFullFileInfo(item.key, token);
+        _fileDetailsCache[item.key] = details;
       } catch (e) {
-        debugPrint("Failed to fetch details for $key: $e");
-        _fileDetails[key] = null;
+        debugPrint("Failed to fetch details for ${item.key}: $e");
+        _fileDetailsCache[item.key] = null; // Error state
       }
       if (mounted) {
         setState(() {});
@@ -94,6 +128,13 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _addFileFromUrl() async {
+    if (_activeGroup == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Сначала создайте группу, чтобы добавить в нее файл.')),
+      );
+      return;
+    }
+
     final url = _urlController.text.trim();
     if (url.isEmpty) return;
 
@@ -103,28 +144,55 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    if (!_fileKeys.contains(key)) {
-      _fileKeys.add(key);
-      await _settingsService.setFileKeys(_fileKeys);
+    if (!_activeGroup!.items.any((item) => item.key == key)) {
+      final newItem = BackupItem.fromOnlyKey(key);
+      _activeGroup!.items.add(newItem);
+      _saveGroupsDebounced();
       _urlController.clear();
       setState(() {
-        _fileDetails[key] = FigmaFile(key: key, name: '##LOADING##', lastModified: '', projectName: '');
+         _fileDetailsCache[key] = FigmaFile(key: key, name: '##LOADING##', lastModified: '', projectName: '');
       });
-      _fetchDetailsForAllFiles();
+      _fetchDetailsForActiveGroup();
     } else {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Этот файл уже в списке.')));
     }
   }
 
   Future<void> _removeFile(String key) async {
-    _fileKeys.remove(key);
-    _fileDetails.remove(key);
-    await _settingsService.setFileKeys(_fileKeys);
+    _activeGroup?.items.removeWhere((item) => item.key == key);
+    _saveGroupsDebounced();
     setState(() {});
   }
 
+  void _saveGroupsDebounced() {
+    if (_debounce?.isActive ?? false) _debounce!.cancel();
+    _debounce = Timer(const Duration(milliseconds: 500), () {
+      _settingsService.saveBackupGroups(_groups);
+    });
+  }
+
+  void _setActiveGroup(BackupGroup? group) {
+    if (group == null) {
+      setState(() {
+        _activeGroup = null;
+      });
+      return;
+    }
+    _settingsService.setActiveGroupId(group.id);
+    setState(() {
+      _activeGroup = group;
+    });
+    _fetchDetailsForActiveGroup();
+  }
+
   Future<void> _startBackup() async {
-    final List<FigmaFile> selectedFiles = _fileDetails.values.where((f) => f != null && f.name != '##LOADING##').cast<FigmaFile>().toList();
+    if (_activeGroup == null) return;
+
+    final List<FigmaFile> selectedFiles = _activeGroup!.items
+        .map((item) => _fileDetailsCache[item.key])
+        .where((f) => f != null && f.name != '##LOADING##')
+        .cast<FigmaFile>()
+        .toList();
 
     if (selectedFiles.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Нет успешно загруженных файлов для бэкапа.')));
@@ -143,24 +211,31 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (mounted) {
-      Navigator.push(context, MaterialPageRoute(
+      final backupCompleted = await Navigator.push<bool>(context, MaterialPageRoute(
         builder: (context) => BackupScreen(
           selectedFiles: selectedFiles,
           savePath: savePath!,
         ),
       ));
+
+      if (backupCompleted == true) {
+        setState(() {
+          _activeGroup!.lastBackup = DateTime.now();
+        });
+        _saveGroupsDebounced();
+      }
     }
   }
 
   void _navigateToSettings() async {
     final result = await Navigator.push(context, MaterialPageRoute(builder: (context) => const SettingsScreen()));
     if (result == true) {
-      _loadInitialKeysAndFetchDetails();
+      _loadInitialData();
     }
   }
 
-  String _formatDate(String isoDate) {
-    if (isoDate.isEmpty) return '';
+  String _formatDate(String? isoDate) {
+    if (isoDate == null || isoDate.isEmpty) return 'N/A';
     try {
       final dateTime = DateTime.parse(isoDate).toLocal();
       return DateFormat('dd.MM.yyyy HH:mm').format(dateTime);
@@ -169,51 +244,245 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // --- GROUP MANAGEMENT DIALOGS ---
+
+  Future<void> _showAddGroupDialog() async {
+    final nameController = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Создать новую группу'),
+        content: TextField(
+          controller: nameController,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Название группы'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, nameController.text.trim()),
+            child: const Text('Создать'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null && result.isNotEmpty) {
+      final newGroup = BackupGroup(name: result);
+      setState(() {
+        _groups.add(newGroup);
+      });
+      _saveGroupsDebounced();
+      _setActiveGroup(newGroup);
+    }
+  }
+
+  Future<void> _showRenameGroupDialog(BackupGroup group, BuildContext context) async {
+    // Ensure the context is valid before showing a dialog.
+    if (!mounted) return;
+    final nameController = TextEditingController(text: group.name);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Редактировать группу'),
+        content: TextField(
+          controller: nameController,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Название группы'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, nameController.text.trim()),
+            child: const Text('Сохранить'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null && result.isNotEmpty) {
+      setState(() {
+        group.name = result;
+      });
+      _saveGroupsDebounced();
+    }
+  }
+
+  Future<void> _showDeleteGroupDialog(BackupGroup group, BuildContext context) async {
+    if (!mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Удалить группу?'),
+        content: Text('Вы уверены, что хотите удалить группу "${group.name}"?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Отмена')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Удалить', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      final wasActive = _activeGroup?.id == group.id;
+      final currentIndex = _groups.indexOf(group);
+      _groups.remove(group);
+
+      if (wasActive) {
+        BackupGroup? newActiveGroup;
+        if (_groups.isNotEmpty) {
+          newActiveGroup = _groups[currentIndex > 0 ? currentIndex - 1 : 0];
+        }
+        _setActiveGroup(newActiveGroup);
+      } else {
+        setState(() {});
+      }
+      _saveGroupsDebounced();
+    }
+  }
+
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Figma Backup'),
-        actions: [
-          IconButton(icon: const Icon(Icons.refresh), onPressed: _loadInitialKeysAndFetchDetails),
-          IconButton(icon: const Icon(Icons.settings), onPressed: _navigateToSettings),
-        ],
-      ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _urlController,
-                    decoration: const InputDecoration(
-                      labelText: 'Вставьте ссылку на файл Figma',
-                      border: OutlineInputBorder(),
-                    ),
-                    onSubmitted: (_) => _addFileFromUrl(),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isWideScreen = constraints.maxWidth >= _breakpoint;
+        final drawerContent = _buildDrawerContent(isWideScreen);
+
+        return Scaffold(
+          appBar: AppBar(
+            backgroundColor: Theme.of(context).colorScheme.primary,
+            foregroundColor: Theme.of(context).colorScheme.onPrimary,
+            elevation: 1, // Add shadow
+            title: Text(isWideScreen ? 'Figma Backup' : (_activeGroup?.name ?? 'Figma Backup')),
+            actions: [
+              IconButton(icon: const Icon(Icons.refresh), onPressed: () => _fetchDetailsForActiveGroup(force: true)),
+              IconButton(icon: const Icon(Icons.settings), onPressed: _navigateToSettings),
+            ],
+          ),
+          drawer: isWideScreen ? null : Drawer(child: drawerContent),
+          body: Row(
+            children: [
+              if (isWideScreen)
+                Material(
+                  color: Theme.of(context).colorScheme.surfaceContainerLow,
+                  child: SizedBox(
+                    width: 280,
+                    child: drawerContent,
                   ),
                 ),
-                const SizedBox(width: 8),
-                IconButton.filled(
-                  icon: const Icon(Icons.add),
-                  onPressed: _addFileFromUrl,
+              Expanded(
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _urlController,
+                              decoration: InputDecoration(
+                                hintText: 'Вставьте ссылку на файл Figma',
+                                filled: true,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(8.0),
+                                  borderSide: BorderSide.none,
+                                ),
+                              ),
+                              onSubmitted: (_) => _addFileFromUrl(),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton.filled(
+                            icon: const Icon(Icons.add),
+                            onPressed: _addFileFromUrl,
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(child: _buildFileList()),
+                  ],
                 ),
-              ],
+              ),
+            ],
+          ),
+          floatingActionButton: _activeGroup != null && _activeGroup!.items.isNotEmpty
+              ? FloatingActionButton.extended(
+                  onPressed: _startBackup,
+                  label: Text('Бэкап (${_activeGroup!.items.map((i) => _fileDetailsCache[i.key]).where((f) => f != null && f.name != '##LOADING##').length})'),
+                  icon: const Icon(Icons.cloud_upload_outlined),
+                )
+              : null,
+        );
+      },
+    );
+  }
+
+  Widget _buildDrawerContent(bool isWideScreen) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(28, 16, 16, 10),
+          child: Text(
+            'Группы для бэкапа',
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
-          const Divider(height: 1),
-          Expanded(child: _buildFileList()),
-        ],
-      ),
-      floatingActionButton: _fileKeys.isNotEmpty
-          ? FloatingActionButton.extended(
-              onPressed: _startBackup,
-              label: Text('Бэкап (${_fileDetails.values.where((f) => f != null && f.name != '##LOADING##').length})'),
-              icon: const Icon(Icons.cloud_upload_outlined),
-            )
-          : null,
+        ),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            itemCount: _groups.length,
+            itemBuilder: (context, index) {
+              final group = _groups[index];
+              return _GroupListItem(
+                group: group,
+                isActive: _activeGroup?.id == group.id,
+                onTap: () {
+                  _setActiveGroup(group);
+                  if (!isWideScreen) Navigator.pop(context);
+                },
+                onRename: () {
+                  // Do not pop the drawer, show the dialog directly over it.
+                  _showRenameGroupDialog(group, context);
+                },
+                onDelete: () {
+                  // Do not pop the drawer, show the dialog directly over it.
+                  _showDeleteGroupDialog(group, context);
+                },
+              );
+            },
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: TextButton.icon(
+            icon: const Icon(Icons.add),
+            label: const Text('Создать группу'),
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(28),
+              ),
+              minimumSize: const Size(double.infinity, 56), // to match ListTile height
+            ),
+            onPressed: () {
+              if (!isWideScreen) {
+                Navigator.pop(context);
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  _showAddGroupDialog();
+                });
+              } else {
+                _showAddGroupDialog();
+              }
+            },
+          ),
+        ),
+      ],
     );
   }
 
@@ -223,68 +492,205 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     if (_errorMessage != null) {
       return SingleChildScrollView(
-      child: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Text(
-            _errorMessage!,
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Theme.of(context).colorScheme.error),
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Text(
+              _errorMessage!,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
           ),
         ),
-      ),
-    );
+      );
     }
-    if (_fileKeys.isEmpty) {
-      return const Center(child: Text('Список пуст. Добавьте файлы по ссылке выше.', style: TextStyle(color: Colors.grey)));
+    if (_activeGroup == null || _activeGroup!.items.isEmpty) {
+      return Center(
+        child: Text(
+          _groups.isEmpty
+              ? 'Создайте вашу первую группу для бэкапа.'
+              : 'Список пуст. Добавьте файлы по ссылке выше.',
+          style: const TextStyle(color: Colors.grey),
+        ),
+      );
     }
 
     return RefreshIndicator(
-      onRefresh: _loadInitialKeysAndFetchDetails,
+      onRefresh: () => _fetchDetailsForActiveGroup(force: true),
       child: ListView.builder(
-        itemCount: _fileKeys.length,
+        padding: const EdgeInsets.fromLTRB(0, 8.0, 0, 96.0),
+        itemCount: _activeGroup!.items.length,
         itemBuilder: (context, index) {
-          final key = _fileKeys[index];
-          final details = _fileDetails[key];
+          final item = _activeGroup!.items[index];
+          final details = _fileDetailsCache[item.key];
+
+          Widget leadingWidget;
+          Widget titleWidget;
+          Widget subtitleWidget;
 
           if (details == null) {
-            return Card(
-              color: Colors.red.withOpacity(0.1),
-              margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              child: ListTile(
-                leading: const Icon(Icons.error_outline, color: Colors.redAccent),
-                title: const Text('Ошибка загрузки информации'),
-                subtitle: Text('Ключ: $key'),
-                trailing: IconButton(icon: const Icon(Icons.delete_outline), onPressed: () => _removeFile(key)),
+            leadingWidget = const Icon(Icons.error_outline, color: Colors.redAccent);
+            titleWidget = const Text('Ошибка загрузки информации');
+            subtitleWidget = Text('Ключ: ${item.key}', style: Theme.of(context).textTheme.bodySmall);
+          } else if (details.name == '##LOADING##') {
+            leadingWidget = SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(
+                strokeWidth: 2.5,
+                color: Theme.of(context).colorScheme.primary,
               ),
             );
-          }
-
-          if (details.name == '##LOADING##') {
-            return Card(
-              margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              child: ListTile(
-                leading: const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2)),
-                title: const Text('Получение информации...'),
-                subtitle: Text('Ключ: $key'),
-                trailing: IconButton(icon: const Icon(Icons.delete_outline), onPressed: () => _removeFile(key)),
+            titleWidget = const Text('Получение информации...');
+            subtitleWidget = Text('Ключ: ${item.key}', style: Theme.of(context).textTheme.bodySmall);
+          } else {
+            leadingWidget = Icon(Icons.description_outlined, color: Theme.of(context).colorScheme.primary);
+            titleWidget = Text(details.name, style: Theme.of(context).textTheme.titleMedium);
+            subtitleWidget = Padding(
+              padding: const EdgeInsets.only(top: 2.0),
+              child: RichText(
+                overflow: TextOverflow.ellipsis,
+                text: TextSpan(
+                  style: Theme.of(context).textTheme.bodyMedium,
+                  children: [
+                    TextSpan(text: '${details.projectName}  •  '),
+                    TextSpan(
+                      text: _formatDate(details.lastModified),
+                      style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    ),
+                  ],
+                ),
               ),
             );
           }
 
           return Card(
-            margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            child: ListTile(
-              leading: const Icon(Icons.description_outlined, color: Colors.blueAccent),
-              title: Text(details.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-              subtitle: Text('Проект: ${details.projectName}\nОбновлено: ${_formatDate(details.lastModified)}'),
-              trailing: IconButton(
-                icon: const Icon(Icons.delete_outline, color: Colors.grey),
-                onPressed: () => _removeFile(key),
+            margin: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16.0, 16.0, 8.0, 16.0),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  leadingWidget,
+                  const SizedBox(width: 16.0),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        titleWidget,
+                        subtitleWidget,
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8.0),
+                  Opacity(
+                    opacity: 0.6,
+                    child: IconButton(
+                      icon: Icon(Icons.delete_outline, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      onPressed: () => _removeFile(item.key),
+                    ),
+                  ),
+                ],
               ),
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+// --- Helper Widget for Drawer ---
+
+class _GroupListItem extends StatefulWidget {
+  final BackupGroup group;
+  final bool isActive;
+  final VoidCallback onTap;
+  final VoidCallback onRename;
+  final VoidCallback onDelete;
+
+  const _GroupListItem({
+    required this.group,
+    required this.isActive,
+    required this.onTap,
+    required this.onRename,
+    required this.onDelete,
+  });
+
+  @override
+  State<_GroupListItem> createState() => _GroupListItemState();
+}
+
+class _GroupListItemState extends State<_GroupListItem> {
+  bool _isHovering = false;
+  bool _isMenuOpen = false;
+
+  @override
+  Widget build(BuildContext context) {
+    String lastBackupText = '';
+    if (widget.group.lastBackup != null) {
+      lastBackupText = 'Бэкап: ${DateFormat('dd.MM.yy HH:mm').format(widget.group.lastBackup!)}';
+    }
+
+    Widget? trailingWidget;
+    if (_isHovering || _isMenuOpen) {
+      trailingWidget = SizedBox(
+        width: 24,
+        height: 24,
+        child: Center(
+          child: PopupMenuButton<String>(
+            padding: EdgeInsets.zero,
+            onOpened: () => setState(() => _isMenuOpen = true),
+            onCanceled: () => setState(() => _isMenuOpen = false),
+            onSelected: (value) {
+              setState(() => _isMenuOpen = false);
+              if (value == 'rename') {
+                widget.onRename();
+              } else if (value == 'delete') {
+                widget.onDelete();
+              }
+            },
+            itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+              const PopupMenuItem<String>(
+                value: 'rename',
+                child: Text('Редактировать'),
+              ),
+              const PopupMenuItem<String>(
+                value: 'delete',
+                child: Text('Удалить'),
+              ),
+            ],
+            icon: const Icon(Icons.more_vert, size: 20),
+            tooltip: 'Действия',
+          ),
+        ),
+      );
+    } else {
+      trailingWidget = SizedBox(
+        width: 24,
+        height: 24,
+        child: Center(
+          child: Text(
+            widget.group.items.length.toString(),
+          ),
+        ),
+      );
+    }
+
+    return MouseRegion(
+      onEnter: (_) => setState(() => _isHovering = true),
+      onExit: (_) => setState(() => _isHovering = false),
+      child: ListTile(
+        title: Text(widget.group.name),
+        subtitle: lastBackupText.isNotEmpty ? Text(lastBackupText, style: Theme.of(context).textTheme.bodySmall) : null,
+        selected: widget.isActive,
+        onTap: widget.onTap,
+        trailing: trailingWidget,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(28),
+        ),
+        selectedTileColor: Theme.of(context).colorScheme.secondaryContainer,
+        selectedColor: Theme.of(context).colorScheme.onSecondaryContainer,
       ),
     );
   }

@@ -1,104 +1,129 @@
 import 'dart:convert';
-import 'package:figma_bckp/models/figma_file.dart';
+import 'package:figma_bckp/models/backup_group.dart';
+import 'package:figma_bckp/models/backup_item.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class SettingsService {
+  // --- NEW KEYS ---
+  static const _backupGroupsKey = 'backup_groups_v2';
+  static const _activeGroupIdKey = 'active_group_id';
+
+  // --- OLD KEYS (for migration) ---
+  static const _backupFileKeysOld = 'backup_file_keys';
+
+  // --- COMMON KEYS ---
   static const _tokenKey = 'figma_token';
   static const _savePathKey = 'save_path';
-  static const _backupFileKeys = 'backup_file_keys';
-  static const _fileDetailPrefix = 'file_detail_';
+
+  // --- TOKEN & PATH ---
 
   Future<void> setSavePath(String path) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_savePathKey, path);
-    } catch (e) {
-      debugPrint("Error saving save path: $e");
-    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_savePathKey, path);
   }
 
   Future<String?> getSavePath() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      return prefs.getString(_savePathKey);
-    } catch (e) {
-      debugPrint("Error getting save path: $e");
-      return null;
-    }
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_savePathKey);
   }
 
   Future<void> saveToken(String token) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_tokenKey, token);
-    } catch (e) {
-      debugPrint("Error saving token: $e");
-    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_tokenKey, token);
   }
 
   Future<String?> getToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_tokenKey);
+  }
+
+  // --- GROUP MANAGEMENT ---
+
+  Future<List<BackupGroup>> getBackupGroups() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // --- MIGRATION LOGIC ---
+    if (await _needsMigration(prefs)) {
+      return await _migrateData(prefs);
+    }
+    // --- END MIGRATION ---
+
+    final jsonString = prefs.getString(_backupGroupsKey);
+    if (jsonString == null) {
+      return [];
+    }
     try {
-      final prefs = await SharedPreferences.getInstance();
-      return prefs.getString(_tokenKey);
+      final List<dynamic> jsonList = json.decode(jsonString);
+      return jsonList.map((json) => BackupGroup.fromJson(json)).toList();
     } catch (e) {
-      debugPrint("Error getting token: $e");
-      return null;
+      debugPrint("Error decoding backup groups: $e");
+      return [];
     }
   }
 
-  Future<void> setFileKeys(List<String> fileKeys) async {
+  Future<void> saveBackupGroups(List<BackupGroup> groups) async {
+    final prefs = await SharedPreferences.getInstance();
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList(_backupFileKeys, fileKeys);
+      final List<Map<String, dynamic>> jsonList =
+          groups.map((group) => group.toJson()).toList();
+      await prefs.setString(_backupGroupsKey, json.encode(jsonList));
     } catch (e) {
-      debugPrint("Error setting file keys: $e");
+      debugPrint("Error saving backup groups: $e");
     }
   }
 
-  Future<List<String>> getFileKeys() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      return prefs.getStringList(_backupFileKeys) ?? [];
-    } catch (e) {
-      debugPrint("Error getting file keys: $e");
-      return []; // Return empty list on error
-    }
+  Future<String?> getActiveGroupId() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_activeGroupIdKey);
   }
 
-  Future<void> saveFileDetails(FigmaFile file) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final key = '$_fileDetailPrefix${file.key}';
-      final value = json.encode(file.toJson());
-      await prefs.setString(key, value);
-    } catch (e) {
-      debugPrint("Error saving file details for key ${file.key}: $e");
-    }
+  Future<void> setActiveGroupId(String groupId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_activeGroupIdKey, groupId);
   }
 
-  Future<FigmaFile?> getFileDetails(String fileKey) async {
+  // --- MIGRATION ---
+
+  Future<bool> _needsMigration(SharedPreferences prefs) async {
+    // If new key exists, no migration needed
+    if (prefs.containsKey(_backupGroupsKey)) {
+      return false;
+    }
+    // If old key exists, migration is needed
+    return prefs.containsKey(_backupFileKeysOld);
+  }
+
+  Future<List<BackupGroup>> _migrateData(SharedPreferences prefs) async {
+    debugPrint("--- Starting data migration from v1 to v2 ---");
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final key = '$_fileDetailPrefix$fileKey';
-      final value = prefs.getString(key);
-      if (value != null) {
-        return FigmaFile.fromJsonCache(json.decode(value));
+      final oldKeys = prefs.getStringList(_backupFileKeysOld) ?? [];
+      if (oldKeys.isEmpty) {
+        await prefs.remove(_backupFileKeysOld); // Clean up
+        debugPrint("Migration: Old key list was empty. Nothing to migrate.");
+        return [];
       }
-      return null;
-    } catch (e) {
-      debugPrint("Error getting file details for key $fileKey: $e");
-      return null;
-    }
-  }
 
-  Future<void> removeFileDetails(String fileKey) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final key = '$_fileDetailPrefix$fileKey';
-      await prefs.remove(key);
+      final List<BackupItem> items =
+          oldKeys.map((key) => BackupItem.fromOnlyKey(key)).toList();
+
+      final defaultGroup = BackupGroup(
+        name: 'Мой бэкап', // Default name for the migrated group
+        items: items,
+      );
+
+      await saveBackupGroups([defaultGroup]);
+      await setActiveGroupId(defaultGroup.id);
+
+      // --- CLEAN UP OLD KEYS ---
+      await prefs.remove(_backupFileKeysOld);
+
+      debugPrint("--- Migration successful ---");
+      return [defaultGroup];
     } catch (e) {
-      debugPrint("Error removing file details for key $fileKey: $e");
+      debugPrint("--- MIGRATION FAILED: $e ---");
+      // In case of failure, return an empty list to avoid crashing.
+      return [];
     }
   }
 }

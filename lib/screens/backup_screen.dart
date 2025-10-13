@@ -111,6 +111,10 @@ class _BackupScreenState extends State<BackupScreen> {
         _isBackupComplete = true;
       });
     }
+
+    // If the backup completed successfully (was not cancelled),
+    // we can pop the screen with a success result.
+    // However, we will do this when the user presses the "Done" button.
   }
 
   @override
@@ -245,6 +249,8 @@ class _BackupScreenState extends State<BackupScreen> {
   }
 
   Widget _buildCompletionControls() {
+    final hasFailures = _tasks.any((t) => t.status == TaskStatus.failure);
+
     return Padding(
       padding: const EdgeInsets.only(top: 16.0),
       child: Column(
@@ -254,6 +260,12 @@ class _BackupScreenState extends State<BackupScreen> {
             icon: const Icon(Icons.folder_open_outlined),
             label: const Text('Открыть папку'),
             onPressed: () => OpenFile.open(widget.savePath),
+          ),
+          const SizedBox(height: 8),
+          FilledButton.icon(
+            icon: const Icon(Icons.check),
+            label: const Text('Готово'),
+            onPressed: () => Navigator.pop(context, !hasFailures),
           ),
         ],
       ),

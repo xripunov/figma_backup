@@ -10,4 +10,31 @@ class BackupItem {
     required this.lastModified,
     required this.projectName, // <-- ОБНОВЛЯЕМ КОНСТРУКТОР
   });
+
+  factory BackupItem.fromOnlyKey(String key) {
+    return BackupItem(
+      key: key,
+      mainFileName: '',
+      lastModified: '',
+      projectName: '',
+    );
+  }
+
+  factory BackupItem.fromJson(Map<String, dynamic> json) {
+    return BackupItem(
+      key: json['key'],
+      mainFileName: json['mainFileName'] ?? '',
+      lastModified: json['lastModified'] ?? '',
+      projectName: json['projectName'] ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'key': key,
+      'mainFileName': mainFileName,
+      'lastModified': lastModified,
+      'projectName': projectName,
+    };
+  }
 }

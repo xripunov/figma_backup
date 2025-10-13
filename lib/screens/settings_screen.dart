@@ -14,7 +14,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _tokenController = TextEditingController();
   final _settingsService = SettingsService();
   bool _isLoading = true;
-  String? _savePath; // <-- Переменная для пути
+  String? _savePath;
+  bool _isDirty = false; // Flag to track if settings have changed
 
   @override
   void initState() {
@@ -22,117 +23,128 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadSettings();
   }
 
+  @override
+  void dispose() {
+    _tokenController.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadSettings() async {
     final token = await _settingsService.getToken();
-    final savePath = await _settingsService.getSavePath(); // <-- Загружаем путь
+    final savePath = await _settingsService.getSavePath();
     setState(() {
       _tokenController.text = token ?? '';
-      _savePath = savePath; // <-- Сохраняем в состояние
+      _savePath = savePath;
       _isLoading = false;
     });
   }
 
-  // <-- НОВЫЙ МЕТОД для выбора папки
   Future<void> _pickSavePath() async {
     final result = await FilePicker.platform.getDirectoryPath(
       dialogTitle: 'Выберите папку для сохранения бэкапов',
     );
 
-    if (result != null) {
+    if (result != null && result != _savePath) {
       await _settingsService.setSavePath(result);
       setState(() {
         _savePath = result;
+        _isDirty = true;
       });
     }
   }
 
-  Future<void> _saveSettings() async {
-    await _settingsService.saveToken(_tokenController.text.trim());
+  Future<void> _showTokenDialog() async {
+    final tokenInputController = TextEditingController(text: _tokenController.text);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Figma API Token'),
+        content: TextField(
+          controller: tokenInputController,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Personal Access Token',
+            helperText: 'Токен хранится локально и безопасно',
+          ),
+          obscureText: true,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, tokenInputController.text.trim()),
+            child: const Text('Сохранить'),
+          ),
+        ],
+      ),
+    );
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Настройки сохранены!')),
-      );
-      Navigator.pop(context, true);
+    if (result != null && result != _tokenController.text) {
+      await _settingsService.saveToken(result);
+      setState(() {
+        _tokenController.text = result;
+        _isDirty = true;
+      });
     }
+  }
+
+  Widget _buildSectionHeader(String title) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
+      child: Text(
+        title,
+        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+          color: Theme.of(context).colorScheme.primary,
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Настройки')),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
+    return PopScope(
+      canPop: false,
+      onPopInvoked: (didPop) {
+        if (didPop) return;
+        Navigator.pop(context, _isDirty);
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Настройки'),
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () => Navigator.pop(context, _isDirty),
+          ),
+        ),
+        body: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : ListView(
                 children: [
-                  const Text('Путь для сохранения бэкапов',
-                      style: TextStyle(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  // <-- ВИДЖЕТЫ для отображения и смены пути
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.grey),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          _savePath ?? 'Папка не выбрана',
-                          style: TextStyle(
-                            fontStyle: _savePath == null
-                                ? FontStyle.italic
-                                : FontStyle.normal,
-                          ),
-                        ),
-                      ],
-                    ),
+                  _buildSectionHeader('Хранилище'),
+                  ListTile(
+                    leading: const Icon(Icons.folder_outlined),
+                    title: const Text('Путь для сохранения'),
+                    subtitle: Text(_savePath ?? 'Не выбрано'),
+                    onTap: _pickSavePath,
                   ),
-                  const SizedBox(height: 8),
-                  ElevatedButton(
-                    onPressed: _pickSavePath,
-                    child: const Text('Изменить папку'),
+                  _buildSectionHeader('Данные'),
+                  ListTile(
+                    leading: const Icon(Icons.key_outlined),
+                    title: const Text('Figma API Token'),
+                    subtitle: Text(_tokenController.text.isEmpty ? 'Не задан' : '••••••••••••••••••••'),
+                    onTap: _showTokenDialog,
                   ),
-                  const SizedBox(height: 24),
-                  const Divider(),
-                  const SizedBox(height: 24),
-                  // --- Старые поля ---
-                  const Text('Данные для API (чтение списка файлов)',
-                      style: TextStyle(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _tokenController,
-                    decoration: const InputDecoration(
-                        labelText: 'Personal Access Token',
-                        border: OutlineInputBorder()),
-                    obscureText: true,
-                  ),
-                  const SizedBox(height: 24),
-                  ElevatedButton(
-                    onPressed: _saveSettings,
-                    child: const Text('Сохранить и закрыть'),
-                  ),
-                  const SizedBox(height: 24),
-                  const Divider(),
-                  const SizedBox(height: 24),
-                  const Text('Отладка',
-                      style: TextStyle(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    icon: const Icon(Icons.description_outlined),
-                    label: const Text('Открыть файл логов'),
-                    onPressed: () async {
+                  _buildSectionHeader('Отладка'),
+                  ListTile(
+                    leading: const Icon(Icons.description_outlined),
+                    title: const Text('Открыть файл логов'),
+                    onTap: () async {
                       final logPath = await LoggingService().getLogFilePath();
                       OpenFile.open(logPath);
                     },
                   ),
                 ],
               ),
-            ),
+      ),
     );
   }
 }

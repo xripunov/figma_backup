@@ -565,6 +565,13 @@ class _HomeScreenState extends State<HomeScreen> {
           }
 
           return Card(
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12.0),
+              side: BorderSide(
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
+            ),
             margin: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16.0, 16.0, 8.0, 16.0),
@@ -594,6 +601,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           );
+
         },
       ),
     );

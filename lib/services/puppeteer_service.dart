@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'package:figma_bckp/services/logging_service.dart';
 import 'package:flutter/foundation.dart' hide Key;
 import 'package:path/path.dart' as path;
@@ -23,6 +24,7 @@ class PuppeteerService {
   bool get isCancelled => _cancellationToken.value;
 
   late final String _profilePath;
+  final _random = Random();
 
   final String _userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
 
@@ -172,7 +174,7 @@ class PuppeteerService {
         executablePath: _getChromiumPath(),
         userDataDir: _profilePath,
         args: _chromeArgs,
-        headless: true,
+        headless: false,
         defaultViewport: null,
         timeout: const Duration(minutes: 2),
       );
@@ -205,9 +207,12 @@ class PuppeteerService {
         try {
           final fileUrl = 'https://www.figma.com/file/${item.key}/';
           _log('Переходим к файлу: $fileUrl');
-          await page.goto(fileUrl, wait: Until.domContentLoaded, timeout: const Duration(minutes: 3));
-          _log('Страница загружена. Ожидаем 5 секунд для полной инициализации интерфейса...');
-          await Future.delayed(const Duration(seconds: 5));
+          await page.goto(fileUrl, wait: Until.networkIdle, timeout: const Duration(minutes: 3));
+          
+          _log('Страница загружена. Имитируем поведение пользователя...');
+          await page.evaluate('window.scrollBy(0, Math.random() * 400 - 200)');
+          await _randomDelay(min: 5, max: 10);
+
 
           if (isCancelled) break;
 
@@ -232,6 +237,8 @@ class PuppeteerService {
           _log(errorMessage);
           onFileFailure?.call(item, errorMessage);
         }
+        _log('Пауза перед следующим файлом...');
+        await _randomDelay(min: 2, max: 5);
       }
     } catch (e) {
       _log('Критическая ошибка: $e');
@@ -244,6 +251,12 @@ class PuppeteerService {
   }
 
   String _sanitizeName(String name) => name.replaceAll(RegExp(r'[<>:"/\\|?*]'), '_').trim();
+
+  Future<void> _randomDelay({int min = 1, int max = 3}) async {
+    final seconds = min + _random.nextInt(max - min + 1);
+    _log('Случайная пауза: $seconds сек.');
+    await Future.delayed(Duration(seconds: seconds));
+  }
 
   Future<File> _saveLocalCopyWithRetry(Page page, Directory downloadsDir, BackupItem item) async {
     const maxRetries = 3;
@@ -258,9 +271,11 @@ class PuppeteerService {
         await page.keyboard.down(commandKey);
         await page.keyboard.press(Key.keyP);
         await page.keyboard.up(commandKey);
-        await Future.delayed(const Duration(seconds: 2));
-        await page.keyboard.type('local copy', delay: const Duration(milliseconds: 100));
-        await Future.delayed(const Duration(seconds: 1));
+        await _randomDelay(min: 2, max: 4);
+        
+        await page.keyboard.type('local copy', delay: Duration(milliseconds: 50 + _random.nextInt(100)));
+        await _randomDelay(min: 1, max: 2);
+
         await page.keyboard.press(Key.enter);
 
         _log('Ожидаем скачивание файла...');
@@ -272,7 +287,8 @@ class PuppeteerService {
         if (attempt == maxRetries) {
           rethrow; // Если это была последняя попытка, пробрасываем ошибку дальше
         }
-        _log('Пауза 5 секунд перед повторной попыткой...');
+        _log('Перезагружаем страницу и ждем 5 секунд перед повторной попыткой...');
+        await page.reload(wait: Until.networkIdle, timeout: const Duration(minutes: 2));
         await Future.delayed(const Duration(seconds: 5)); 
       }
     }

@@ -64,16 +64,25 @@ class _HomeScreenState extends State<HomeScreen> {
       _groups = [];
       // Optionally, show an error message to the user
     }
-    final activeGroupId = await _settingsService.getActiveGroupId();
 
-    if (_groups.isNotEmpty) {
-      _activeGroup = _groups.firstWhere(
-        (g) => g.id == activeGroupId,
-        orElse: () => _groups.first,
-      );
-      await _settingsService.setActiveGroupId(_activeGroup!.id);
+    // If no groups exist after loading (and potential migration), create one.
+    if (_groups.isEmpty) {
+      final defaultGroup = BackupGroup(name: 'Мой бэкап');
+      _groups.add(defaultGroup);
+      await _settingsService.saveBackupGroups(_groups);
+      _activeGroup = defaultGroup;
+      await _settingsService.setActiveGroupId(defaultGroup.id);
     } else {
-      _activeGroup = null;
+      final activeGroupId = await _settingsService.getActiveGroupId();
+      if (_groups.isNotEmpty) {
+        _activeGroup = _groups.firstWhere(
+          (g) => g.id == activeGroupId,
+          orElse: () => _groups.first,
+        );
+        await _settingsService.setActiveGroupId(_activeGroup!.id);
+      } else {
+        _activeGroup = null;
+      }
     }
 
     setState(() {
@@ -92,9 +101,11 @@ class _HomeScreenState extends State<HomeScreen> {
         _errorMessage = '''API токен не найден. Пожалуйста, добавьте его в настройках.
 
 Как получить API токен:
-1. Откройте Figma и перейдите в «Help and account» -> «Account settings».
+1. Откройте Figma и перейдите в «Settings» -> «Security».
 2. В разделе «Personal access tokens» создайте новый токен.
-3. ВАЖНО: в выпадающем списке «Scopes» выберите «File Content» с разрешением «Read-only».
+3. ВАЖНО: в списке «Scopes» выберите:
+   • Files: file_metadata:read
+   • Projects: projects:read
 4. Скопируйте токен и вставьте его в настройках этого приложения.''';
       });
       return;

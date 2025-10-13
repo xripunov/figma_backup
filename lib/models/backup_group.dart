@@ -10,9 +10,10 @@ class BackupGroup {
   BackupGroup({
     String? id,
     required this.name,
-    this.items = const [],
+    List<BackupItem>? items,
     this.lastBackup,
-  }) : id = id ?? const Uuid().v4();
+  }) : id = id ?? const Uuid().v4(),
+       items = items ?? [];
 
   factory BackupGroup.fromJson(Map<String, dynamic> json) {
     return BackupGroup(

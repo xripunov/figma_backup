@@ -9,6 +9,7 @@ import 'package:figma_bckp/screens/settings_screen.dart';
 import 'package:figma_bckp/services/figma_api_service.dart';
 import 'package:figma_bckp/services/settings_service.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
@@ -39,6 +40,7 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _figmaApiService = Provider.of<FigmaApiService>(context, listen: false);
     _settingsService = Provider.of<SettingsService>(context, listen: false);
+    _urlController.addListener(() => setState(() {}));
     _loadInitialData();
   }
 
@@ -127,34 +129,56 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _addFileFromUrl() async {
+  Future<bool> _processAndAddFile(String url) async {
     if (_activeGroup == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Сначала создайте группу, чтобы добавить в нее файл.')),
       );
-      return;
+      return false;
     }
-
-    final url = _urlController.text.trim();
-    if (url.isEmpty) return;
 
     final key = _figmaApiService.extractFileKey(url);
     if (key == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Неверная ссылка на файл Figma.')));
-      return;
+      return false;
     }
 
     if (!_activeGroup!.items.any((item) => item.key == key)) {
       final newItem = BackupItem.fromOnlyKey(key);
-      _activeGroup!.items.add(newItem);
+      _activeGroup!.items.insert(0, newItem);
       _saveGroupsDebounced();
-      _urlController.clear();
       setState(() {
-         _fileDetailsCache[key] = FigmaFile(key: key, name: '##LOADING##', lastModified: '', projectName: '');
+        _fileDetailsCache[key] = FigmaFile(key: key, name: '##LOADING##', lastModified: '', projectName: '');
       });
       _fetchDetailsForActiveGroup();
+      return true;
     } else {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Этот файл уже в списке.')));
+      return false;
+    }
+  }
+
+  Future<void> _addFileFromUrl() async {
+    final url = _urlController.text.trim();
+    if (url.isEmpty) return;
+    await _processAndAddFile(url);
+    _urlController.clear();
+  }
+
+  Future<void> _addFileFromClipboard() async {
+    final clipboardData = await Clipboard.getData(Clipboard.kTextPlain);
+    final url = clipboardData?.text?.trim();
+    if (url == null || url.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Буфер обмена пуст.')),
+      );
+      return;
+    }
+    final success = await _processAndAddFile(url);
+    if (success && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Файл добавлен из буфера обмена.')),
+      );
     }
   }
 
@@ -211,18 +235,30 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (mounted) {
-      final backupCompleted = await Navigator.push<bool>(context, MaterialPageRoute(
+      final backupResult = await Navigator.push<String?>(context, MaterialPageRoute(
         builder: (context) => BackupScreen(
           selectedFiles: selectedFiles,
           savePath: savePath!,
         ),
       ));
 
-      if (backupCompleted == true) {
-        setState(() {
-          _activeGroup!.lastBackup = DateTime.now();
-        });
-        _saveGroupsDebounced();
+      if (!mounted) return;
+
+      switch (backupResult) {
+        case 'success':
+          setState(() {
+            _activeGroup!.lastBackup = DateTime.now();
+          });
+          _saveGroupsDebounced();
+          break;
+        case 'failure':
+          // No snackbar needed, user saw the final state on the backup screen.
+          break;
+        case 'canceled':
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Бэкап отменен.')),
+          );
+          break;
       }
     }
   }
@@ -245,6 +281,20 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // --- GROUP MANAGEMENT DIALOGS ---
+
+  bool _isAnyFileLoading() {
+    if (_activeGroup == null) return false;
+    return _activeGroup!.items
+        .any((item) => _fileDetailsCache[item.key]?.name == '##LOADING##');
+  }
+
+  int _getBackupReadyFilesCount() {
+    if (_activeGroup == null) return 0;
+    return _activeGroup!.items
+        .map((i) => _fileDetailsCache[i.key])
+        .where((f) => f != null && f.name != '##LOADING##')
+        .length;
+  }
 
   Future<void> _showAddGroupDialog() async {
     final nameController = TextEditingController();
@@ -395,10 +445,16 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                           ),
                           const SizedBox(width: 8),
-                          IconButton.filled(
-                            icon: const Icon(Icons.add),
-                            onPressed: _addFileFromUrl,
-                          ),
+                          _urlController.text.isEmpty
+                              ? IconButton(
+                                  icon: const Icon(Icons.assignment_outlined),
+                                  onPressed: _addFileFromClipboard,
+                                  tooltip: 'Вставить из буфера обмена',
+                                )
+                              : IconButton.filled(
+                                  icon: const Icon(Icons.add),
+                                  onPressed: _addFileFromUrl,
+                                ),
                         ],
                       ),
                     ),
@@ -410,9 +466,18 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           floatingActionButton: _activeGroup != null && _activeGroup!.items.isNotEmpty
               ? FloatingActionButton.extended(
-                  onPressed: _startBackup,
-                  label: Text('Бэкап (${_activeGroup!.items.map((i) => _fileDetailsCache[i.key]).where((f) => f != null && f.name != '##LOADING##').length})'),
-                  icon: const Icon(Icons.cloud_upload_outlined),
+                  onPressed: _isAnyFileLoading() || _getBackupReadyFilesCount() == 0 ? null : _startBackup,
+                  label: _isAnyFileLoading()
+                      ? SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 3,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                        )
+                      : Text('Сохранить (${_getBackupReadyFilesCount()})'),
+                  icon: _isAnyFileLoading() ? null : const Icon(Icons.download_outlined),
                 )
               : null,
         );
@@ -505,12 +570,16 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
     if (_activeGroup == null || _activeGroup!.items.isEmpty) {
-      return Center(
-        child: Text(
-          _groups.isEmpty
-              ? 'Создайте вашу первую группу для бэкапа.'
-              : 'Список пуст. Добавьте файлы по ссылке выше.',
-          style: const TextStyle(color: Colors.grey),
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 50.0),
+        child: Center(
+          child: Text(
+            _groups.isEmpty
+                ? 'Создайте вашу первую группу для бэкапа.'
+                : 'Список пуст. Добавьте файлы по\u00A0ссылке выше.\n\nРекомендуется добавлять и\u00A0скачивать не\u00A0более 10\u00A0файлов за\u00A0раз.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.grey),
+          ),
         ),
       );
     }
@@ -546,6 +615,9 @@ class _HomeScreenState extends State<HomeScreen> {
           } else {
             leadingWidget = Icon(Icons.description_outlined, color: Theme.of(context).colorScheme.primary);
             titleWidget = Text(details.name, style: Theme.of(context).textTheme.titleMedium);
+            
+            final projectName = details.projectName.isEmpty ? 'Drafts' : details.projectName;
+
             subtitleWidget = Padding(
               padding: const EdgeInsets.only(top: 2.0),
               child: RichText(
@@ -553,7 +625,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 text: TextSpan(
                   style: Theme.of(context).textTheme.bodyMedium,
                   children: [
-                    TextSpan(text: '${details.projectName}  •  '),
+                    TextSpan(text: '$projectName  •  '),
                     TextSpan(
                       text: _formatDate(details.lastModified),
                       style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
@@ -635,9 +707,13 @@ class _GroupListItemState extends State<_GroupListItem> {
 
   @override
   Widget build(BuildContext context) {
-    String lastBackupText = '';
+    Widget? subtitleWidget;
     if (widget.group.lastBackup != null) {
-      lastBackupText = 'Бэкап: ${DateFormat('dd.MM.yy HH:mm').format(widget.group.lastBackup!)}';
+      final lastBackupText = 'Обновлено: ${DateFormat('dd.MM.yy HH:mm').format(widget.group.lastBackup!)}';
+      final subtitleStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.6),
+          );
+      subtitleWidget = Text(lastBackupText, style: subtitleStyle);
     }
 
     Widget? trailingWidget;
@@ -680,6 +756,9 @@ class _GroupListItemState extends State<_GroupListItem> {
         child: Center(
           child: Text(
             widget.group.items.length.toString(),
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: Theme.of(context).textTheme.titleMedium?.color?.withOpacity(0.6),
+                ),
           ),
         ),
       );
@@ -690,7 +769,7 @@ class _GroupListItemState extends State<_GroupListItem> {
       onExit: (_) => setState(() => _isHovering = false),
       child: ListTile(
         title: Text(widget.group.name),
-        subtitle: lastBackupText.isNotEmpty ? Text(lastBackupText, style: Theme.of(context).textTheme.bodySmall) : null,
+        subtitle: subtitleWidget,
         selected: widget.isActive,
         onTap: widget.onTap,
         trailing: trailingWidget,

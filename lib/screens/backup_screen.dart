@@ -5,6 +5,8 @@ import 'package:figma_bckp/services/puppeteer_service.dart';
 import 'package:flutter/material.dart';
 import 'package:open_file_plus/open_file_plus.dart';
 import 'package:provider/provider.dart';
+import 'package:wave/config.dart';
+import 'package:wave/wave.dart';
 
 class BackupScreen extends StatefulWidget {
   final List<FigmaFile> selectedFiles;
@@ -54,7 +56,7 @@ class _BackupScreenState extends State<BackupScreen> {
       onFileStart: (item) {
         final task = _findTaskForItem(item);
         task?.status = TaskStatus.running;
-        task?.message = 'Скачивается...';
+        task?.message = 'Скачивание...';
       },
       onFileSuccess: (item) {
         final task = _findTaskForItem(item);
@@ -111,10 +113,6 @@ class _BackupScreenState extends State<BackupScreen> {
         _isBackupComplete = true;
       });
     }
-
-    // If the backup completed successfully (was not cancelled),
-    // we can pop the screen with a success result.
-    // However, we will do this when the user presses the "Done" button.
   }
 
   @override
@@ -124,27 +122,35 @@ class _BackupScreenState extends State<BackupScreen> {
     return PopScope(
       canPop: !isRunning,
       onPopInvoked: (didPop) {
-        if (didPop && isRunning) {
-          _puppeteerService.cancelBackup();
-        }
+        if (didPop) return;
+        // This logic runs when a pop is attempted while `isRunning` is true.
+        _puppeteerService.forceCloseBrowser();
+        _finishBackup(cancellationMessage: 'Отменено пользователем');
+        // Immediately pop the screen after cancellation.
+        Navigator.pop(context, 'canceled');
       },
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Процесс бэкапа'),
-          automaticallyImplyLeading: !isRunning,
+          backgroundColor: Theme.of(context).colorScheme.primary,
+          foregroundColor: Theme.of(context).colorScheme.onPrimary,
+          elevation: 1,
+          title: const Text('Сохранение файлов'),
         ),
-        body: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _buildOverallStatus(),
-              const SizedBox(height: 16),
-              const Divider(),
-              Expanded(child: _buildTasksList()),
-              if (_isBackupComplete) _buildCompletionControls(),
-            ],
-          ),
+        body: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: _buildOverallStatus(),
+            ),
+            const Divider(height: 1),
+            Expanded(child: _buildTasksList()),
+            if (_isBackupComplete)
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: _buildCompletionControls(),
+              ),
+          ],
         ),
       ),
     );
@@ -155,75 +161,85 @@ class _BackupScreenState extends State<BackupScreen> {
     final progress = _tasks.isNotEmpty ? processedTasks / _tasks.length : 0.0;
     final isRunning = !_isBackupComplete;
 
-    String title = isRunning ? 'Идет бэкап...' : 'Бэкап завершен';
-    IconData icon = isRunning ? Icons.cloud_upload_outlined : (_tasks.any((t) => t.status == TaskStatus.failure) ? Icons.warning_amber_rounded : Icons.check_circle_outline_rounded);
-    Color iconColor = isRunning ? Theme.of(context).colorScheme.primary : (_tasks.any((t) => t.status == TaskStatus.failure) ? Colors.orange : Colors.green);
-
-    return Card(
-      elevation: 2,
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          _currentAction,
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+        ),
+        const SizedBox(height: 16),
+        Row(
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(icon, color: iconColor, size: 28),
-                const SizedBox(width: 12),
-                Text(title, style: Theme.of(context).textTheme.titleLarge),
-              ],
+            Expanded(
+              child: LinearProgressIndicator(
+                value: progress,
+                minHeight: 8,
+                borderRadius: BorderRadius.circular(4),
+              ),
             ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: LinearProgressIndicator(
-                    value: progress,
-                    minHeight: 8,
-                    borderRadius: BorderRadius.circular(4),
+            const SizedBox(width: 16),
+            Text(
+              '$processedTasks/${_tasks.length}',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+            ),
+            const SizedBox(width: 8),
+            Visibility(
+              visible: isRunning,
+              maintainSize: true,
+              maintainAnimation: true,
+              maintainState: true,
+              child: SizedBox(
+                width: 90,
+                child: IconButton(
+                  icon: const Icon(Icons.cancel_outlined),
+                  onPressed: () {
+                    _puppeteerService.forceCloseBrowser();
+                    _finishBackup(cancellationMessage: 'Отменено пользователем');
+                  },
+                  style: IconButton.styleFrom(
+                    foregroundColor: Theme.of(context).colorScheme.error,
                   ),
                 ),
-                const SizedBox(width: 12),
-                Text('${(progress * 100).toStringAsFixed(0)}%'),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text('$processedTasks из ${_tasks.length} файлов обработано'),
-            const SizedBox(height: 16),
-            Text(_currentAction, textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodySmall),
-            const SizedBox(height: 16),
-            if (isRunning)
-              ElevatedButton.icon(
-                icon: const Icon(Icons.stop),
-                label: const Text('Остановить бэкап'),
-                onPressed: () {
-                  _puppeteerService.forceCloseBrowser();
-                  _finishBackup(cancellationMessage: 'Отменено пользователем');
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
               ),
+            ),
           ],
         ),
-      ),
+      ],
     );
   }
 
   Widget _buildTasksList() {
-    return ListView.builder(
+    return ListView.separated(
       itemCount: _tasks.length,
+      separatorBuilder: (context, index) => const Divider(height: 1, indent: 16, endIndent: 16),
       itemBuilder: (context, index) {
         final task = _tasks[index];
         return ChangeNotifierProvider.value(
           value: task,
           child: Consumer<BackupTask>(
             builder: (context, task, child) {
-              return Card(
-                margin: const EdgeInsets.symmetric(vertical: 4),
-                child: ListTile(
-                  leading: _buildStatusIcon(task.status),
-                  title: Text(task.title, overflow: TextOverflow.ellipsis),
-                  subtitle: task.message != null ? Text(task.message!, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: task.status == TaskStatus.failure ? Colors.redAccent : null)) : null,
-                ),
+              return ListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
+                leading: _buildStatusIcon(task.status),
+                title: Text(task.title, overflow: TextOverflow.ellipsis),
+                subtitle: task.message != null
+                    ? Text(
+                        task.message!,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: task.status == TaskStatus.failure
+                              ? Theme.of(context).colorScheme.error
+                              : null,
+                        ),
+                      )
+                    : null,
               );
             },
           ),
@@ -233,42 +249,44 @@ class _BackupScreenState extends State<BackupScreen> {
   }
 
   Widget _buildStatusIcon(TaskStatus status) {
-    switch (status) {
-      case TaskStatus.pending:
-        return const Icon(Icons.schedule, color: Colors.grey);
-      case TaskStatus.running:
-        return const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2.0));
-      case TaskStatus.success:
-        return const Icon(Icons.check_circle, color: Colors.green);
-      case TaskStatus.failure:
-        return const Icon(Icons.error, color: Colors.red);
-      // --- НОВАЯ ИКОНКА ---
-      case TaskStatus.skipped:
-        return const Icon(Icons.history, color: Colors.grey);
-    }
+    final theme = Theme.of(context);
+    return SizedBox(
+      width: 24,
+      height: 24,
+      child: Center(
+        child: () {
+          switch (status) {
+            case TaskStatus.pending:
+              return Icon(Icons.schedule_outlined, color: theme.colorScheme.onSurfaceVariant);
+            case TaskStatus.running:
+              return CircularProgressIndicator(strokeWidth: 2.5, color: theme.colorScheme.primary);
+            case TaskStatus.success:
+              return Icon(Icons.check_circle_outline, color: Colors.green);
+            case TaskStatus.failure:
+              return Icon(Icons.error_outline, color: theme.colorScheme.error);
+            case TaskStatus.skipped:
+              return Icon(Icons.history_outlined, color: theme.colorScheme.onSurfaceVariant);
+          }
+        }(),
+      ),
+    );
   }
 
   Widget _buildCompletionControls() {
     final hasFailures = _tasks.any((t) => t.status == TaskStatus.failure);
 
-    return Padding(
-      padding: const EdgeInsets.only(top: 16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          ElevatedButton.icon(
-            icon: const Icon(Icons.folder_open_outlined),
-            label: const Text('Открыть папку'),
-            onPressed: () => OpenFile.open(widget.savePath),
-          ),
-          const SizedBox(height: 8),
-          FilledButton.icon(
-            icon: const Icon(Icons.check),
-            label: const Text('Готово'),
-            onPressed: () => Navigator.pop(context, !hasFailures),
-          ),
-        ],
-      ),
+    return Row(
+      children: [
+        OutlinedButton(
+          onPressed: () => OpenFile.open(widget.savePath),
+          child: const Text('Открыть папку'),
+        ),
+        const Spacer(),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, hasFailures ? 'failure' : 'success'),
+          child: const Text('Готово'),
+        ),
+      ],
     );
   }
 }

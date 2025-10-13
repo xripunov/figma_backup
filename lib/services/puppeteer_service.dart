@@ -174,7 +174,7 @@ class PuppeteerService {
         executablePath: _getChromiumPath(),
         userDataDir: _profilePath,
         args: _chromeArgs,
-        headless: false,
+        headless: true,
         defaultViewport: null,
         timeout: const Duration(minutes: 2),
       );
@@ -219,7 +219,8 @@ class PuppeteerService {
           final downloadedFile = await _saveLocalCopyWithRetry(page, downloadsDir, item);
           if (isCancelled) break;
 
-          final sanitizedProjectName = _sanitizeName(item.projectName);
+          final projectName = item.projectName.isEmpty ? 'Drafts' : item.projectName;
+          final sanitizedProjectName = _sanitizeName(projectName);
           final sanitizedFileName = _sanitizeName(item.mainFileName);
           final projectFolderPath = path.join(savePath, sanitizedProjectName);
           await Directory(projectFolderPath).create(recursive: true);

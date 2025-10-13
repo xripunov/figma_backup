@@ -1,7 +1,8 @@
 import 'package:file_picker/file_picker.dart';
-import 'package:figma_bckp/services/logging_service.dart';
+import '../services/logging_service.dart';
 import 'package:flutter/material.dart';
 import 'package:open_file_plus/open_file_plus.dart';
+import 'package:figma_bckp/services/bookmark_service.dart';
 import '../services/settings_service.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -45,7 +46,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
 
     if (result != null && result != _savePath) {
-      await _settingsService.setSavePath(result);
+      final bookmark = await BookmarkService().createBookmark(result);
+      await _settingsService.setSavePath(result, bookmark);
       setState(() {
         _savePath = result;
         _isDirty = true;

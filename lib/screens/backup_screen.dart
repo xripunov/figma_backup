@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:figma_bckp/models/backup_item.dart';
 import 'package:figma_bckp/models/backup_task.dart';
 import 'package:figma_bckp/models/figma_file.dart';
@@ -5,8 +7,6 @@ import 'package:figma_bckp/services/puppeteer_service.dart';
 import 'package:flutter/material.dart';
 import 'package:open_file_plus/open_file_plus.dart';
 import 'package:provider/provider.dart';
-import 'package:wave/config.dart';
-import 'package:wave/wave.dart';
 
 class BackupScreen extends StatefulWidget {
   final List<FigmaFile> selectedFiles;
@@ -23,11 +23,24 @@ class BackupScreen extends StatefulWidget {
 }
 
 class _BackupScreenState extends State<BackupScreen> {
+  static const List<String> _funnyPhrases = [
+    'Мы могли бы быстрее, но нам лень.',
+    'Загрузка почти завершена... почти.',
+    'Терпение — золото. Спасибо, что спонсируете нас.',
+    'Вызываем духов Figma для ускорения процесса...',
+    'Пока вы ждете, почему бы не выпить чашечку чая?',
+    'Не волнуйтесь, мы все еще здесь. Наверное.',
+    'Если загрузка остановилась, просто перезагрузите... Вселенную.',
+    'Шлифуем пиксели, один за другим.',
+  ];
+
   final List<BackupTask> _tasks = [];
   late final PuppeteerService _puppeteerService;
 
   bool _isBackupComplete = false;
-  String _currentAction = 'Инициализация...';
+  String _currentFunnyPhrase = 'Готовимся к взлету...';
+  Timer? _phraseTimer;
+  int _currentPhraseIndex = 0;
 
   @override
   void initState() {
@@ -37,7 +50,21 @@ class _BackupScreenState extends State<BackupScreen> {
 
   @override
   void dispose() {
+    _phraseTimer?.cancel();
     super.dispose();
+  }
+
+  void _startPhraseTimer() {
+    _phraseTimer = Timer.periodic(const Duration(seconds: 4), (timer) {
+      if (!_isBackupComplete) {
+        setState(() {
+          _currentPhraseIndex = (_currentPhraseIndex + 1) % _funnyPhrases.length;
+          _currentFunnyPhrase = _funnyPhrases[_currentPhraseIndex];
+        });
+      } else {
+        timer.cancel();
+      }
+    });
   }
 
   void _initializeAndRunBackup() {
@@ -50,9 +77,6 @@ class _BackupScreenState extends State<BackupScreen> {
     _tasks.addAll(fileTasks);
 
     _puppeteerService = PuppeteerService(
-      onAction: (message) {
-        if (mounted) setState(() => _currentAction = message);
-      },
       onFileStart: (item) {
         final task = _findTaskForItem(item);
         task?.status = TaskStatus.running;
@@ -76,6 +100,7 @@ class _BackupScreenState extends State<BackupScreen> {
     );
 
     _startDownloadProcess();
+    _startPhraseTimer();
   }
 
   DownloadFileTask? _findTaskForItem(BackupItem item) {
@@ -100,6 +125,7 @@ class _BackupScreenState extends State<BackupScreen> {
   }
 
   void _finishBackup({String? cancellationMessage}) {
+    _phraseTimer?.cancel();
     if (cancellationMessage != null) {
       for (final task in _tasks) {
         if (task.status == TaskStatus.running || task.status == TaskStatus.pending) {
@@ -123,10 +149,8 @@ class _BackupScreenState extends State<BackupScreen> {
       canPop: !isRunning,
       onPopInvoked: (didPop) {
         if (didPop) return;
-        // This logic runs when a pop is attempted while `isRunning` is true.
         _puppeteerService.forceCloseBrowser();
         _finishBackup(cancellationMessage: 'Отменено пользователем');
-        // Immediately pop the screen after cancellation.
         Navigator.pop(context, 'canceled');
       },
       child: Scaffold(
@@ -135,6 +159,12 @@ class _BackupScreenState extends State<BackupScreen> {
           foregroundColor: Theme.of(context).colorScheme.onPrimary,
           elevation: 1,
           title: const Text('Сохранение файлов'),
+          bottom: isRunning
+              ? const PreferredSize(
+                  preferredSize: Size.fromHeight(4.0),
+                  child: LinearProgressIndicator(),
+                )
+              : null,
         ),
         body: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -165,7 +195,7 @@ class _BackupScreenState extends State<BackupScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          _currentAction,
+          isRunning ? _currentFunnyPhrase : 'Процесс завершен!',
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),

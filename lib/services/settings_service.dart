@@ -1,8 +1,11 @@
 import 'dart:convert';
+import 'package:figma_bckp/models/automation_settings.dart';
 import 'package:figma_bckp/models/backup_group.dart';
 import 'package:figma_bckp/models/backup_item.dart';
+import 'package:figma_bckp/services/automation_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:figma_bckp/services/bookmark_service.dart';
 
 class SettingsService {
   // --- NEW KEYS ---
@@ -15,17 +18,28 @@ class SettingsService {
   // --- COMMON KEYS ---
   static const _tokenKey = 'figma_token';
   static const _savePathKey = 'save_path';
+  static const _savePathBookmarkKey = 'save_path_bookmark';
+
+  final AutomationService _automationService = AutomationService();
 
   // --- TOKEN & PATH ---
 
-  Future<void> setSavePath(String path) async {
+  Future<void> setSavePath(String path, [String? bookmark]) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_savePathKey, path);
+    if (bookmark != null) {
+      await prefs.setString(_savePathBookmarkKey, bookmark);
+    }
   }
 
   Future<String?> getSavePath() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString(_savePathKey);
+  }
+
+  Future<String?> getSavePathBookmark() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_savePathBookmarkKey);
   }
 
   Future<void> saveToken(String token) async {
@@ -55,7 +69,33 @@ class SettingsService {
     }
     try {
       final List<dynamic> jsonList = json.decode(jsonString);
-      return jsonList.map((json) => BackupGroup.fromJson(json)).toList();
+      List<BackupGroup> groups =
+          jsonList.map((json) => BackupGroup.fromJson(json)).toList();
+
+      // --- SYNC AUTOMATION STATE ---
+      List<BackupGroup> syncedGroups = [];
+      bool needsSaving = false;
+      for (final group in groups) {
+        if (group.automationSettings.frequency != Frequency.off) {
+          final isActive = await _automationService.isAutomationActive(group.id);
+          if (isActive) {
+            syncedGroups.add(group);
+          } else {
+            // If launchd task is not active, update the state
+            syncedGroups.add(group.copyWith(automationSettings: const AutomationSettings.off()));
+            debugPrint("Sync: Automation for group '${group.name}' was disabled externally.");
+            needsSaving = true;
+          }
+        } else {
+          syncedGroups.add(group);
+        }
+      }
+      
+      if (needsSaving) {
+        await saveBackupGroups(syncedGroups);
+      }
+
+      return syncedGroups;
     } catch (e) {
       debugPrint("Error decoding backup groups: $e");
       return [];
@@ -81,6 +121,28 @@ class SettingsService {
   Future<void> setActiveGroupId(String groupId) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_activeGroupIdKey, groupId);
+  }
+
+  // --- AUTOMATION CONTROL ---
+
+  Future<void> updateAutomationSettings(String groupId, AutomationSettings settings) async {
+    final groups = await getBackupGroups();
+    final groupIndex = groups.indexWhere((g) => g.id == groupId);
+    if (groupIndex == -1) return;
+
+    final group = groups[groupIndex];
+    final updatedGroup = group.copyWith(automationSettings: settings);
+
+    // First, disable any existing automation to ensure a clean state
+    await _automationService.disableAutomation(groupId);
+
+    // If the new frequency is not 'off', enable it with the new settings
+    if (settings.frequency != Frequency.off) {
+      await _automationService.enableAutomation(updatedGroup);
+    }
+    
+    groups[groupIndex] = updatedGroup;
+    await saveBackupGroups(groups);
   }
 
   // --- MIGRATION ---

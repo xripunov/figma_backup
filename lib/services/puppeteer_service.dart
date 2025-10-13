@@ -81,7 +81,7 @@ class PuppeteerService {
 
   String _getChromiumPath() {
     var executablePath = path.dirname(path.fromUri(Platform.resolvedExecutable));
-    return path.join(executablePath, '..', 'Frameworks', 'App.framework', 'Resources', 'flutter_assets', 'assets', 'chromium', 'Chromium.app', 'Contents', 'MacOS', 'Chromium');
+    return path.join(executablePath, '..', 'Resources', 'chromium', 'Chromium.app', 'Contents', 'MacOS', 'Chromium');
   }
 
   /// Этап 1: Быстрая невидимая проверка, активна ли сессия Figma.
@@ -206,16 +206,18 @@ class PuppeteerService {
 
         try {
           final fileUrl = 'https://www.figma.com/file/${item.key}/';
-          _log('Переходим к файлу: $fileUrl');
-          await page.goto(fileUrl, wait: Until.networkIdle, timeout: const Duration(minutes: 3));
+          _log('1. Перехожу к файлу: $fileUrl');
+          await page.goto(fileUrl, wait: Until.domContentLoaded, timeout: const Duration(minutes: 3));
+          _log('2. Страница загружена. URL: ${page.url}');
           
-          _log('Страница загружена. Имитируем поведение пользователя...');
+          _log('3. Имитирую поведение пользователя...');
           await page.evaluate('window.scrollBy(0, Math.random() * 400 - 200)');
           await _randomDelay(min: 5, max: 10);
 
 
           if (isCancelled) break;
 
+          _log('4. Начинаю процесс скачивания...');
           final downloadedFile = await _saveLocalCopyWithRetry(page, downloadsDir, item);
           if (isCancelled) break;
 
@@ -226,7 +228,7 @@ class PuppeteerService {
           await Directory(projectFolderPath).create(recursive: true);
           final targetPath = path.join(projectFolderPath, '$sanitizedFileName.fig');
           
-          _log('Перемещаем файл в: $targetPath');
+          _log('9. Перемещаю файл в: $targetPath');
           await downloadedFile.rename(targetPath);
 
           manifest[item.key] = item.lastModified;
@@ -263,7 +265,7 @@ class PuppeteerService {
     const maxRetries = 3;
     for (var attempt = 1; attempt <= maxRetries; attempt++) {
       if (isCancelled) throw Exception('Отменено пользователем');
-      _log('Запуск скачивания "${item.mainFileName}" (попытка $attempt/$maxRetries)...');
+      _log('5. Запуск скачивания "${item.mainFileName}" (попытка $attempt/$maxRetries)...');
       
       try {
         final filesBeforeDownload = downloadsDir.listSync().map((f) => f.path).toSet();
@@ -274,13 +276,16 @@ class PuppeteerService {
         await page.keyboard.up(commandKey);
         await _randomDelay(min: 2, max: 4);
         
+        _log('5.2. Ввожу "local copy"...');
         await page.keyboard.type('local copy', delay: Duration(milliseconds: 50 + _random.nextInt(100)));
         await _randomDelay(min: 1, max: 2);
 
+        _log('5.3. Нажимаю Enter...');
         await page.keyboard.press(Key.enter);
 
-        _log('Ожидаем скачивание файла...');
+        _log('6. Ожидаю скачивание файла...');
         final downloadedFile = await _waitForNewFile(downloadsDir, filesBeforeDownload, item);
+        _log('8. Файл успешно обнаружен!');
         return downloadedFile;
 
       } catch (e) {
@@ -288,6 +293,7 @@ class PuppeteerService {
         if (attempt == maxRetries) {
           rethrow; // Если это была последняя попытка, пробрасываем ошибку дальше
         }
+        if (isCancelled) break; // Добавлена проверка
         _log('Перезагружаем страницу и ждем 5 секунд перед повторной попыткой...');
         await page.reload(wait: Until.networkIdle, timeout: const Duration(minutes: 2));
         await Future.delayed(const Duration(seconds: 5)); 
@@ -299,11 +305,22 @@ class PuppeteerService {
   Future<File> _waitForNewFile(Directory dir, Set<String> filesBefore, BackupItem item) async {
     const timeout = Duration(minutes: 2);
     final stopwatch = Stopwatch()..start();
+    var logTimer = Stopwatch()..start();
+
+    _log('7. Начал поиск нового .fig файла...');
 
     while (stopwatch.elapsed < timeout) {
       if (isCancelled) throw Exception("Отменено пользователем");
 
       var entities = dir.listSync();
+
+      // Логируем текущие .fig файлы раз в 5 секунд, чтобы не спамить
+      if (logTimer.elapsed.inSeconds >= 5) {
+        final currentFigFiles = entities.where((e) => e.path.endsWith('.fig')).map((e) => path.basename(e.path)).toList();
+        _log('7.1. Проверка... Текущие .fig файлы в загрузках: $currentFigFiles');
+        logTimer.reset();
+      }
+
       for (final entity in entities) {
         final isNewFigFile = entity is File &&
             entity.path.endsWith('.fig') &&

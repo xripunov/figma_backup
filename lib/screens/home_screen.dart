@@ -10,11 +10,16 @@ import 'package:figma_bckp/services/figma_api_service.dart';
 import 'package:figma_bckp/services/settings_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:figma_bckp/screens/widgets/automation_control_widget.dart';
+import 'package:figma_bckp/models/automation_settings.dart';
+import 'package:figma_bckp/screens/widgets/automation_settings_dialog.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'package:figma_bckp/services/bookmark_service.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final String? startupGroupId;
+  const HomeScreen({super.key, this.startupGroupId});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -73,7 +78,13 @@ class _HomeScreenState extends State<HomeScreen> {
       _activeGroup = defaultGroup;
       await _settingsService.setActiveGroupId(defaultGroup.id);
     } else {
-      final activeGroupId = await _settingsService.getActiveGroupId();
+      String? activeGroupId;
+      if (widget.startupGroupId != null) {
+        activeGroupId = widget.startupGroupId;
+      } else {
+        activeGroupId = await _settingsService.getActiveGroupId();
+      }
+
       if (_groups.isNotEmpty) {
         _activeGroup = _groups.firstWhere(
           (g) => g.id == activeGroupId,
@@ -239,7 +250,8 @@ class _HomeScreenState extends State<HomeScreen> {
       final result = await FilePicker.platform.getDirectoryPath(dialogTitle: 'Выберите папку для сохранения бэкапов');
       if (result != null) {
         savePath = result;
-        await _settingsService.setSavePath(savePath);
+        final bookmark = await BookmarkService().createBookmark(savePath);
+        await _settingsService.setSavePath(savePath, bookmark);
       } else {
         return;
       }
@@ -288,6 +300,28 @@ class _HomeScreenState extends State<HomeScreen> {
       return DateFormat('dd.MM.yyyy HH:mm').format(dateTime);
     } catch (e) {
       return 'N/A';
+    }
+  }
+
+  Future<void> _showAutomationSettingsDialog() async {
+    if (_activeGroup == null) return;
+
+    final result = await showDialog<AutomationSettings>(
+      context: context,
+      builder: (context) => AutomationSettingsDialog(
+        initialSettings: _activeGroup!.automationSettings,
+      ),
+    );
+
+    if (result != null) {
+      await _settingsService.updateAutomationSettings(_activeGroup!.id, result);
+      setState(() {
+        final groupIndex = _groups.indexWhere((g) => g.id == _activeGroup!.id);
+        if (groupIndex != -1) {
+          _groups[groupIndex] = _activeGroup!.copyWith(automationSettings: result);
+          _activeGroup = _groups[groupIndex];
+        }
+      });
     }
   }
 
@@ -437,6 +471,14 @@ class _HomeScreenState extends State<HomeScreen> {
               Expanded(
                 child: Column(
                   children: [
+                    if (_activeGroup != null && _activeGroup!.items.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                        child: AutomationControlWidget(
+                          description: _activeGroup!.automationSettings.toDescription(),
+                          onPressed: _showAutomationSettingsDialog,
+                        ),
+                      ),
                     Padding(
                       padding: const EdgeInsets.all(16.0),
                       child: Row(
@@ -469,6 +511,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         ],
                       ),
                     ),
+                    if (_activeGroup != null && _activeGroup!.items.isNotEmpty)
+                      const Divider(height: 1),
                     Expanded(child: _buildFileList()),
                   ],
                 ),

@@ -230,12 +230,24 @@ class PuppeteerService {
           final downloadedFile = await _saveLocalCopyWithRetry(page, downloadsDir, item);
           if (isCancelled) break;
 
-          final projectName = item.projectName.isEmpty ? 'Drafts' : item.projectName;
-          final sanitizedProjectName = _sanitizeName(projectName);
+          final isBranch = item.branchName != null && item.branchName!.isNotEmpty;
+          final sanitizedProjectName = item.projectName.isEmpty
+              ? 'Drafts'
+              : _sanitizeName(item.projectName);
+
+          String fileName;
+          if (isBranch) {
+            // Для веток: MainFileName BranchName
+            fileName = '${item.mainFileName} ${item.branchName!}';
+          } else if (sanitizedProjectName == 'Drafts') {
+            // Для черновиков: FileName_abcdef
+            final shortKey = item.key.length >= 6 ? item.key.substring(0, 6) : item.key;
+            fileName = '${item.mainFileName}_$shortKey';
+          } else {
+            // Для обычных файлов в проектах: FileName
+            fileName = item.mainFileName;
+          }
           
-          final fileName = item.branchName != null && item.branchName!.isNotEmpty
-            ? '${item.mainFileName} [${item.branchName}]'
-            : item.mainFileName;
           final sanitizedFileName = _sanitizeName(fileName);
 
           final projectFolderPath = path.join(savePath, sanitizedProjectName);

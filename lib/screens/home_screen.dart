@@ -16,6 +16,7 @@ import 'package:figma_bckp/screens/widgets/automation_settings_dialog.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:figma_bckp/services/bookmark_service.dart';
+import 'package:collection/collection.dart';
 
 class HomeScreen extends StatefulWidget {
   final String? startupGroupId;
@@ -56,6 +57,19 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  @override
+  void didUpdateWidget(covariant HomeScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.startupGroupId != null && widget.startupGroupId != _activeGroup?.id) {
+      final groupToActivate = _groups.firstWhereOrNull(
+        (g) => g.id == widget.startupGroupId,
+      );
+      if (groupToActivate != null) {
+        _setActiveGroup(groupToActivate);
+      }
+    }
+  }
+
   Future<void> _loadInitialData() async {
     setState(() {
       _isInitialLoading = true;
@@ -79,7 +93,8 @@ class _HomeScreenState extends State<HomeScreen> {
       await _settingsService.setActiveGroupId(defaultGroup.id);
     } else {
       String? activeGroupId;
-      if (widget.startupGroupId != null) {
+      // --- FIX: Prioritize startupGroupId from URL scheme ---
+      if (widget.startupGroupId != null && _groups.any((g) => g.id == widget.startupGroupId)) {
         activeGroupId = widget.startupGroupId;
       } else {
         activeGroupId = await _settingsService.getActiveGroupId();
@@ -473,7 +488,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   children: [
                     if (_activeGroup != null && _activeGroup!.items.isNotEmpty)
                       Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                        padding: const EdgeInsets.fromLTRB(0, 16, 0, 0),
                         child: AutomationControlWidget(
                           description: _activeGroup!.automationSettings.toDescription(),
                           onPressed: _showAutomationSettingsDialog,

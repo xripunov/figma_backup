@@ -1,9 +1,14 @@
 import 'package:file_picker/file_picker.dart';
+import 'package:figma_bckp/services/puppeteer_service.dart';
+import 'package:provider/provider.dart';
 import '../services/logging_service.dart';
 import 'package:flutter/material.dart';
 import 'package:open_file_plus/open_file_plus.dart';
 import 'package:figma_bckp/services/bookmark_service.dart';
 import '../services/settings_service.dart';
+
+// TODO: Предполагается, что есть BackupProvider для отслеживания состояния
+// import '../providers/backup_provider.dart'; 
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -103,6 +108,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // TODO: Заменить на реальный провайдер состояния
+    // final isBackupInProgress = context.watch<BackupProvider>().isBackupInProgress;
+    const isBackupInProgress = false;
+
     return PopScope(
       canPop: false,
       onPopInvoked: (didPop) {
@@ -127,6 +136,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     title: const Text('Путь для сохранения'),
                     subtitle: Text(_savePath ?? 'Не выбрано'),
                     onTap: _pickSavePath,
+                    enabled: !isBackupInProgress,
                   ),
                   _buildSectionHeader('Данные'),
                   ListTile(
@@ -134,6 +144,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     title: const Text('Figma API Token'),
                     subtitle: Text(_tokenController.text.isEmpty ? 'Не задан' : '••••••••••••••••••••'),
                     onTap: _showTokenDialog,
+                    enabled: !isBackupInProgress,
+                  ),
+                  _buildSectionHeader('Аккаунт'),
+                  ListTile(
+                    leading: Icon(Icons.logout, color: isBackupInProgress ? Colors.grey : Theme.of(context).colorScheme.error),
+                    title: Text(
+                      'Выйти из аккаунта Figma',
+                      style: TextStyle(color: isBackupInProgress ? Colors.grey : Theme.of(context).colorScheme.error),
+                    ),
+                    enabled: !isBackupInProgress,
+                    onTap: _handleLogout,
                   ),
                   _buildSectionHeader('Отладка'),
                   ListTile(
@@ -148,5 +169,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
       ),
     );
+  }
+
+  Future<void> _handleLogout() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Выйти из аккаунта Figma?'),
+        content: const Text(
+          'Это действие удалит сохраненную сессию. При следующем запуске резервного копирования вам потребуется снова войти в свой аккаунт Figma.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Отмена')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Выйти'),
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(context).colorScheme.error,
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      final puppeteerService = context.read<PuppeteerService>();
+      final success = await puppeteerService.logout();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(success ? 'Вы успешно вышли из аккаунта' : 'Не удалось удалить сессию'),
+            backgroundColor: success ? Colors.green : Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    }
   }
 }

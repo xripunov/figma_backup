@@ -14,7 +14,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:app_links/app_links.dart';
-import 'services/settings_service.dart';
+import 'package:figma_bckp/services/puppeteer_service.dart';
+import 'package:figma_bckp/services/settings_service.dart';
 import 'package:figma_bckp/services/bookmark_service.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -60,6 +61,9 @@ void main() {
           ),
           Provider<FigmaApiService>(
             create: (_) => FigmaApiService(),
+          ),
+          Provider<PuppeteerService>(
+            create: (_) => PuppeteerService(),
           ),
           ChangeNotifierProvider<ValueNotifier<bool>>(
             create: (_) => ValueNotifier(false), // isBackupInProgress

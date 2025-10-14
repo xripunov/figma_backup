@@ -409,4 +409,24 @@ class PuppeteerService {
     }
     throw TimeoutException('Тайм-аут ожидания скачивания файла "${item.mainFileName}".');
   }
+
+  /// Удаляет папку с профилем браузера, чтобы "разлогинить" пользователя.
+  Future<bool> logout() async {
+    try {
+      // Убедимся, что путь инициализирован
+      await _initProfilePath();
+      final profileDir = Directory(_profilePath);
+      if (await profileDir.exists()) {
+        _log('Удаляем профиль браузера...');
+        await profileDir.delete(recursive: true);
+        _log('Профиль успешно удален.');
+        return true;
+      }
+      _log('Профиль не найден, удаление не требуется.');
+      return true; // Считаем успехом, если и так чисто
+    } catch (e) {
+      _log('Ошибка при удалении профиля: $e');
+      return false;
+    }
+  }
 }

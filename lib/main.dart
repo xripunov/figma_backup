@@ -15,52 +15,110 @@ import 'package:app_links/app_links.dart';
 import 'services/settings_service.dart';
 import 'package:figma_bckp/services/bookmark_service.dart';
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await LoggingService().init();
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
-  final settingsService = SettingsService();
+void main() {
+  runZonedGuarded<Future<void>>(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+    await LoggingService().init();
 
-  // --- RESTORE FILE ACCESS PERMISSION ---
-  try {
-    final bookmark = await settingsService.getSavePathBookmark();
-    if (bookmark != null) {
-      debugPrint("Restoring permission using bookmark...");
-      final success = await BookmarkService().resolveBookmark(bookmark);
-      if (success) {
-        debugPrint("Permission restored.");
-      } else {
-        debugPrint("Failed to restore permission.");
+    final settingsService = SettingsService();
+
+    // --- RESTORE FILE ACCESS PERMISSION ---
+    try {
+      final bookmark = await settingsService.getSavePathBookmark();
+      if (bookmark != null) {
+        debugPrint("Restoring permission using bookmark...");
+        final success = await BookmarkService().resolveBookmark(bookmark);
+        if (success) {
+          debugPrint("Permission restored.");
+        } else {
+          debugPrint("Failed to restore permission.");
+        }
       }
+    } catch (e, s) {
+      debugPrint("Error restoring permission: $e\n$s");
+      _handleError(e, s);
     }
-  } catch (e) {
-    debugPrint("Error restoring permission: $e");
+    // --- END RESTORE ---
+
+    final token = await settingsService.getToken();
+
+    // --- Set up global error handling ---
+    FlutterError.onError = (FlutterErrorDetails details) {
+      // Forward Flutter errors to the zone error handler.
+      Zone.current.handleUncaughtError(details.exception, details.stack ?? StackTrace.current);
+    };
+
+    runApp(
+      MultiProvider(
+        providers: [
+          Provider<SettingsService>(
+            create: (_) => settingsService,
+          ),
+          Provider<FigmaApiService>(
+            create: (_) => FigmaApiService(),
+          ),
+          ChangeNotifierProvider<ValueNotifier<bool>>(
+            create: (_) => ValueNotifier(false), // isBackupInProgress
+          ),
+        ],
+        child: MyApp(
+          isTokenProvided: token != null && token.isNotEmpty,
+          navigatorKey: navigatorKey,
+        ),
+      ),
+    );
+  }, _handleError);
+}
+
+Future<void> _handleError(Object error, StackTrace stack) async {
+  final loggingService = LoggingService();
+  final logMessage = 'Unhandled error: $error\nStack trace:\n$stack';
+  debugPrint('!!! GLOBAL ERROR HANDLER CAUGHT: $logMessage');
+  loggingService.log(logMessage);
+
+  final context = navigatorKey.currentContext;
+  if (context != null && context.mounted) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Критическая ошибка'),
+          content: SingleChildScrollView(
+            child: Text(
+              'К сожалению, в приложении произошла непредвиденная ошибка.\n\n'
+              'Технические детали:\n$error\n\n'
+              'Полная информация была сохранена в лог-файл. Пожалуйста, отправьте его разработчику.\n\n'
+              'Путь к файлу: ${loggingService.logFilePath}',
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('OK'),
+              onPressed: () {
+                // In a real app, you might want to exit or restart.
+                // For now, we just dismiss the dialog.
+                Navigator.of(context).pop();
+              },
+            ),
+          ],
+        );
+      },
+    );
   }
-  // --- END RESTORE ---
-
-  final token = await settingsService.getToken();
-
-  runApp(
-    MultiProvider(
-      providers: [
-        Provider<SettingsService>(
-          create: (_) => settingsService,
-        ),
-        Provider<FigmaApiService>(
-          create: (_) => FigmaApiService(),
-        ),
-        ChangeNotifierProvider<ValueNotifier<bool>>(
-          create: (_) => ValueNotifier(false), // isBackupInProgress
-        ),
-      ],
-      child: MyApp(isTokenProvided: token != null && token.isNotEmpty),
-    ),
-  );
 }
 
 class MyApp extends StatefulWidget {
   final bool isTokenProvided;
-  const MyApp({super.key, required this.isTokenProvided});
+  final GlobalKey<NavigatorState> navigatorKey;
+
+  const MyApp({
+    super.key,
+    required this.isTokenProvided,
+    required this.navigatorKey,
+  });
 
   @override
   State<MyApp> createState() => _MyAppState();
@@ -68,7 +126,6 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> {
   StreamSubscription? _linkSubscription;
-  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   late final AppLinks _appLinks;
   String? _startupGroupId;
 
@@ -154,13 +211,13 @@ class _MyAppState extends State<MyApp> {
       }
 
       // Ensure we have a valid context to navigate
-      var navigator = _navigatorKey.currentState;
+      var navigator = widget.navigatorKey.currentState;
       if (navigator == null) {
         debugPrint("Automation: Navigator not ready, waiting...");
         // Wait for the navigator to be ready
         final completer = Completer<void>();
         Timer.periodic(const Duration(milliseconds: 100), (timer) {
-          if (_navigatorKey.currentState != null) {
+          if (widget.navigatorKey.currentState != null) {
             timer.cancel();
             completer.complete();
           }
@@ -170,7 +227,7 @@ class _MyAppState extends State<MyApp> {
           }
         });
         await completer.future;
-        navigator = _navigatorKey.currentState;
+        navigator = widget.navigatorKey.currentState;
       }
 
       if (navigator == null) {
@@ -204,7 +261,7 @@ class _MyAppState extends State<MyApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      navigatorKey: _navigatorKey,
+      navigatorKey: widget.navigatorKey,
       title: 'Figma Backup',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),

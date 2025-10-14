@@ -10,6 +10,8 @@ class LoggingService {
   late final File _logFile;
   bool _isInitialized = false;
 
+  String get logFilePath => _logFile.path;
+
   Future<void> init() async {
     if (_isInitialized) return;
     final appSupportDir = await getApplicationSupportDirectory();

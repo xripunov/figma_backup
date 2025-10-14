@@ -207,7 +207,12 @@ class PuppeteerService {
         try {
           final fileUrl = 'https://www.figma.com/file/${item.key}/';
           _log('1. Перехожу к файлу: $fileUrl');
-          await page.goto(fileUrl, wait: Until.domContentLoaded, timeout: const Duration(minutes: 3));
+          try {
+            await page.goto(fileUrl, wait: Until.domContentLoaded, timeout: const Duration(minutes: 3));
+          } catch (e, s) {
+            _log('!!! Ошибка навигации page.goto(): $e\n$s');
+            rethrow;
+          }
           _log('2. Страница загружена. URL: ${page.url}');
           
           _log('3. Имитирую поведение пользователя...');
@@ -271,6 +276,7 @@ class PuppeteerService {
         final filesBeforeDownload = downloadsDir.listSync().map((f) => f.path).toSet();
 
         final commandKey = Platform.isMacOS ? Key.meta : Key.control;
+        _log('5.1. Нажимаю $commandKey...');
         await page.keyboard.down(commandKey);
         await page.keyboard.press(Key.keyP);
         await page.keyboard.up(commandKey);

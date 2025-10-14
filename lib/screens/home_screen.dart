@@ -268,6 +268,11 @@ class _HomeScreenState extends State<HomeScreen> {
         final bookmark = await BookmarkService().createBookmark(savePath);
         await _settingsService.setSavePath(savePath, bookmark);
       } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Выбор папки отменен. Бэкап не запущен.')),
+          );
+        }
         return;
       }
     }
@@ -329,7 +334,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
 
     if (result != null) {
-      await _settingsService.updateAutomationSettings(_activeGroup!.id, result);
       setState(() {
         final groupIndex = _groups.indexWhere((g) => g.id == _activeGroup!.id);
         if (groupIndex != -1) {
@@ -337,6 +341,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _activeGroup = _groups[groupIndex];
         }
       });
+      _saveGroupsDebounced();
     }
   }
 

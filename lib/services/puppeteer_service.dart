@@ -237,15 +237,13 @@ class PuppeteerService {
 
           String fileName;
           if (isBranch) {
-            // Для веток: MainFileName BranchName
-            fileName = '${item.mainFileName} ${item.branchName!}';
-          } else if (sanitizedProjectName == 'Drafts') {
-            // Для черновиков: FileName_abcdef
-            final shortKey = item.key.length >= 6 ? item.key.substring(0, 6) : item.key;
-            fileName = '${item.mainFileName}_$shortKey';
+            // Для веток: MainFileName [BranchName] [branch_id]
+            final shortBranchId = item.branchId!.length >= 6 ? item.branchId!.substring(0, 6) : item.branchId!;
+            fileName = '${item.mainFileName} [${item.branchName!}] [$shortBranchId]';
           } else {
-            // Для обычных файлов в проектах: FileName
-            fileName = item.mainFileName;
+            // Для всех основных файлов: FileName [file_key]
+            final shortKey = item.key.length >= 6 ? item.key.substring(0, 6) : item.key;
+            fileName = '${item.mainFileName} [$shortKey]';
           }
           
           final sanitizedFileName = _sanitizeName(fileName);

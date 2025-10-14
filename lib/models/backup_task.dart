@@ -44,5 +44,8 @@ class LoginCheckTask extends BackupTask {
 // Конкретная задача для скачивания файла
 class DownloadFileTask extends BackupTask {
   final BackupItem item;
-  DownloadFileTask(this.item) : super(item.mainFileName);
+  DownloadFileTask(this.item) 
+      : super(item.branchName != null && item.branchName!.isNotEmpty 
+              ? item.branchName! 
+              : item.mainFileName);
 }

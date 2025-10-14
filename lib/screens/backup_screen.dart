@@ -9,12 +9,12 @@ import 'package:open_file_plus/open_file_plus.dart';
 import 'package:provider/provider.dart';
 
 class BackupScreen extends StatefulWidget {
-  final List<FigmaFile> selectedFiles;
+  final List<BackupItem> itemsToBackup;
   final String savePath;
 
   const BackupScreen({
     super.key,
-    required this.selectedFiles,
+    required this.itemsToBackup,
     required this.savePath,
   });
 
@@ -77,12 +77,7 @@ class _BackupScreenState extends State<BackupScreen> {
   }
 
   void _initializeAndRunBackup() {
-    final fileTasks = widget.selectedFiles.map((file) => DownloadFileTask(BackupItem(
-      key: file.key,
-      mainFileName: file.name,
-      lastModified: file.lastModified,
-      projectName: file.projectName,
-    )));
+    final fileTasks = widget.itemsToBackup.map((item) => DownloadFileTask(item));
     _tasks.addAll(fileTasks);
 
     _puppeteerService = PuppeteerService(
@@ -114,7 +109,9 @@ class _BackupScreenState extends State<BackupScreen> {
 
   DownloadFileTask? _findTaskForItem(BackupItem item) {
     for (final task in _tasks) {
-      if (task is DownloadFileTask && task.item.key == item.key) {
+      if (task is DownloadFileTask &&
+          task.item.key == item.key &&
+          task.item.branchId == item.branchId) {
         return task;
       }
     }

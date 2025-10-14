@@ -8,6 +8,8 @@ import 'package:figma_bckp/screens/home_screen.dart';
 import 'package:figma_bckp/screens/onboarding_screen.dart';
 import 'package:figma_bckp/services/figma_api_service.dart';
 import 'package:figma_bckp/services/logging_service.dart';
+import 'package:figma_bckp/models/backup_item.dart';
+import 'package:figma_bckp/models/figma_url_info.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -195,17 +197,32 @@ class _MyAppState extends State<MyApp> {
       final groups = await settingsService.getBackupGroups();
       final group = groups.firstWhere((g) => g.id == groupId, orElse: () => throw Exception('Group not found'));
 
-      final List<FigmaFile> filesToBackup = [];
+      // Reconstruct FigmaUrlInfo from BackupItem
+      final List<BackupItem> itemsToBackup = [];
       for (final item in group.items) {
         try {
-          final details = await figmaApiService.getFullFileInfo(item.key, token);
-          filesToBackup.add(details);
+          final fileKey = item.branchId != null ? item.key.split('_').first : item.key;
+          final urlInfo = FigmaUrlInfo(
+            fileKey: fileKey,
+            branchId: item.branchId,
+            fileType: item.fileType,
+          );
+          final details = await figmaApiService.getFullFileInfo(urlInfo, token);
+          itemsToBackup.add(BackupItem(
+            key: details.key,
+            mainFileName: details.name,
+            lastModified: details.lastModified,
+            projectName: details.projectName,
+            branchId: item.branchId,
+            branchName: details.branchName,
+            fileType: details.fileType,
+          ));
         } catch (e) {
           debugPrint("Automation: Failed to fetch info for ${item.key}, skipping. Error: $e");
         }
       }
 
-      if (filesToBackup.isEmpty) {
+      if (itemsToBackup.isEmpty) {
         debugPrint("Automation: No files to back up for group ${group.name}.");
         return;
       }
@@ -237,7 +254,7 @@ class _MyAppState extends State<MyApp> {
 
       await navigator.push(MaterialPageRoute(
         builder: (context) => BackupScreen(
-          selectedFiles: filesToBackup,
+          itemsToBackup: itemsToBackup,
           savePath: savePath,
         ),
       ));

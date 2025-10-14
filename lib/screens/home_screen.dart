@@ -13,10 +13,12 @@ import 'package:flutter/services.dart';
 import 'package:figma_bckp/screens/widgets/automation_control_widget.dart';
 import 'package:figma_bckp/models/automation_settings.dart';
 import 'package:figma_bckp/screens/widgets/automation_settings_dialog.dart';
+import 'package:figma_bckp/models/figma_url_info.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:figma_bckp/services/bookmark_service.dart';
 import 'package:collection/collection.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 class HomeScreen extends StatefulWidget {
   final String? startupGroupId;
@@ -154,7 +156,15 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!_activeGroup!.items.any((i) => i.key == item.key)) continue;
 
       try {
-        final details = await _figmaApiService.getFullFileInfo(item.key, token);
+        // Reconstruct FigmaUrlInfo from BackupItem
+        final fileKey = item.branchId != null ? item.key.split('_').first : item.key;
+        final urlInfo = FigmaUrlInfo(
+          fileKey: fileKey,
+          branchId: item.branchId,
+          fileType: item.fileType,
+        );
+
+        final details = await _figmaApiService.getFullFileInfo(urlInfo, token);
         _fileDetailsCache[item.key] = details;
       } catch (e) {
         debugPrint("Failed to fetch details for ${item.key}: $e");
@@ -174,18 +184,31 @@ class _HomeScreenState extends State<HomeScreen> {
       return false;
     }
 
-    final key = _figmaApiService.extractFileKey(url);
-    if (key == null) {
+    final urlInfo = _figmaApiService.extractUrlInfo(url);
+    if (urlInfo == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Неверная ссылка на файл Figma.')));
       return false;
     }
 
-    if (!_activeGroup!.items.any((item) => item.key == key)) {
-      final newItem = BackupItem.fromOnlyKey(key);
+    // Create a unique key for the item: filekey for main branch, filekey_branchid for others.
+    final itemKey = urlInfo.branchId != null
+        ? '${urlInfo.fileKey}_${urlInfo.branchId}'
+        : urlInfo.fileKey;
+
+    if (!_activeGroup!.items.any((item) => item.key == itemKey)) {
+      final newItem = BackupItem(
+        key: itemKey,
+        mainFileName: '', // Will be filled after fetching details
+        lastModified: '',
+        projectName: '',
+        branchId: urlInfo.branchId,
+        fileType: urlInfo.fileType,
+      );
       _activeGroup!.items.insert(0, newItem);
       _saveGroupsDebounced();
       setState(() {
-        _fileDetailsCache[key] = FigmaFile(key: key, name: '##LOADING##', lastModified: '', projectName: '');
+        // Use the same unique key for the cache
+        _fileDetailsCache[itemKey] = FigmaFile(key: itemKey, name: '##LOADING##', lastModified: '', projectName: '');
       });
       _fetchDetailsForActiveGroup();
       return true;
@@ -249,13 +272,25 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _startBackup() async {
     if (_activeGroup == null) return;
 
-    final List<FigmaFile> selectedFiles = _activeGroup!.items
-        .map((item) => _fileDetailsCache[item.key])
-        .where((f) => f != null && f.name != '##LOADING##')
-        .cast<FigmaFile>()
+    final List<BackupItem> itemsToBackup = _activeGroup!.items
+        .map((item) {
+          final details = _fileDetailsCache[item.key];
+          if (details == null || details.name == '##LOADING##') return null;
+          return BackupItem(
+            key: details.key,
+            mainFileName: details.name,
+            lastModified: details.lastModified,
+            projectName: details.projectName,
+            branchId: item.branchId, // Preserve from the original item
+            branchName: details.branchName, // Get from fetched details
+            fileType: details.fileType,
+          );
+        })
+        .where((i) => i != null)
+        .cast<BackupItem>()
         .toList();
 
-    if (selectedFiles.isEmpty) {
+    if (itemsToBackup.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Нет успешно загруженных файлов для бэкапа.')));
       return;
     }
@@ -280,7 +315,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) {
       final backupResult = await Navigator.push<String?>(context, MaterialPageRoute(
         builder: (context) => BackupScreen(
-          selectedFiles: selectedFiles,
+          itemsToBackup: itemsToBackup,
           savePath: savePath!,
         ),
       ));
@@ -626,6 +661,10 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+// ... (rest of the imports)
+
+// ... (inside _HomeScreenState)
+
   Widget _buildFileList() {
     if (_isInitialLoading) {
       return const Center(child: CircularProgressIndicator());
@@ -688,8 +727,10 @@ class _HomeScreenState extends State<HomeScreen> {
             titleWidget = const Text('Получение информации...');
             subtitleWidget = Text('Ключ: ${item.key}', style: Theme.of(context).textTheme.bodySmall);
           } else {
-            leadingWidget = Icon(Icons.description_outlined, color: Theme.of(context).colorScheme.primary);
-            titleWidget = Text(details.name, style: Theme.of(context).textTheme.titleMedium);
+            leadingWidget = _buildLeadingIcon(details);
+            
+            final displayName = details.branchName ?? details.name;
+            titleWidget = Text(displayName, style: Theme.of(context).textTheme.titleMedium);
             
             final projectName = details.projectName.isEmpty ? 'Drafts' : details.projectName;
 
@@ -753,6 +794,30 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
+}
+
+Widget _buildLeadingIcon(FigmaFile file) {
+  String assetName;
+  if (file.branchName != null) {
+    assetName = 'assets/icons/branch.svg';
+  } else {
+    switch (file.fileType) {
+      case FigmaFileType.design:
+        assetName = 'assets/icons/fig.svg';
+        break;
+      case FigmaFileType.figjam:
+        assetName = 'assets/icons/board.svg';
+        break;
+      case FigmaFileType.slides:
+        assetName = 'assets/icons/slides.svg';
+        break;
+    }
+  }
+  return SvgPicture.asset(
+    assetName,
+    width: 24,
+    height: 24,
+  );
 }
 
 // --- Helper Widget for Drawer ---

@@ -8,6 +8,7 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:puppeteer/puppeteer.dart';
 import '../models/backup_item.dart';
+import '../models/figma_url_info.dart';
 
 class PuppeteerService {
   final Function(BackupItem item)? onFileStart;
@@ -198,14 +199,17 @@ class PuppeteerService {
         
         onFileStart?.call(item);
 
-        if (item.lastModified == manifest[item.key]) {
+        final manifestKey = item.branchId != null ? '${item.key}_${item.branchId}' : item.key;
+
+        if (item.lastModified == manifest[manifestKey]) {
           _log('Пропускаем "${item.mainFileName}" (без изменений)');
           onFileSkipped?.call(item);
           continue;
         }
 
         try {
-          final fileUrl = 'https://www.figma.com/file/${item.key}/';
+          final fileUrl = _buildFigmaUrl(item);
+
           _log('1. Перехожу к файлу: $fileUrl');
           try {
             await page.goto(fileUrl, wait: Until.domContentLoaded, timeout: const Duration(minutes: 3));
@@ -228,15 +232,22 @@ class PuppeteerService {
 
           final projectName = item.projectName.isEmpty ? 'Drafts' : item.projectName;
           final sanitizedProjectName = _sanitizeName(projectName);
-          final sanitizedFileName = _sanitizeName(item.mainFileName);
+          
+          final fileName = item.branchName != null && item.branchName!.isNotEmpty
+            ? '${item.mainFileName} [${item.branchName}]'
+            : item.mainFileName;
+          final sanitizedFileName = _sanitizeName(fileName);
+
           final projectFolderPath = path.join(savePath, sanitizedProjectName);
           await Directory(projectFolderPath).create(recursive: true);
-          final targetPath = path.join(projectFolderPath, '$sanitizedFileName.fig');
+          
+          final extension = _getExtensionForItem(item);
+          final targetPath = path.join(projectFolderPath, '$sanitizedFileName$extension');
           
           _log('9. Перемещаю файл в: $targetPath');
           await downloadedFile.rename(targetPath);
 
-          manifest[item.key] = item.lastModified;
+          manifest[manifestKey] = item.lastModified;
           await manifestFile.writeAsString(json.encode(manifest));
           onFileSuccess?.call(item);
 
@@ -255,6 +266,36 @@ class PuppeteerService {
       }
     } finally {
       await forceCloseBrowser();
+    }
+  }
+
+  String _getExtensionForItem(BackupItem item) {
+    switch (item.fileType) {
+      case FigmaFileType.figjam:
+        return '.jam';
+      case FigmaFileType.slides:
+        return '.deck';
+      case FigmaFileType.design:
+      default:
+        return '.fig';
+    }
+  }
+
+  String _buildFigmaUrl(BackupItem item) {
+    String basePath;
+    if (item.fileType == FigmaFileType.figjam) {
+      basePath = 'board';
+    } else if (item.fileType == FigmaFileType.slides) {
+      basePath = 'slides';
+    } else {
+      basePath = 'file'; // Using 'file' for broader compatibility
+    }
+
+    if (item.branchId != null) {
+      // Branch URLs are always under the /file/ path
+      return 'https://www.figma.com/file/${item.key}/branch/${item.branchId}/';
+    } else {
+      return 'https://www.figma.com/$basePath/${item.key}/';
     }
   }
 
@@ -312,8 +353,9 @@ class PuppeteerService {
     const timeout = Duration(minutes: 2);
     final stopwatch = Stopwatch()..start();
     var logTimer = Stopwatch()..start();
+    final expectedExtension = _getExtensionForItem(item);
 
-    _log('7. Начал поиск нового .fig файла...');
+    _log('7. Начал поиск нового $expectedExtension файла...');
 
     while (stopwatch.elapsed < timeout) {
       if (isCancelled) throw Exception("Отменено пользователем");
@@ -322,22 +364,26 @@ class PuppeteerService {
 
       // Логируем текущие .fig файлы раз в 5 секунд, чтобы не спамить
       if (logTimer.elapsed.inSeconds >= 5) {
-        final currentFigFiles = entities.where((e) => e.path.endsWith('.fig')).map((e) => path.basename(e.path)).toList();
-        _log('7.1. Проверка... Текущие .fig файлы в загрузках: $currentFigFiles');
+        final currentFigFiles = entities.where((e) => e.path.endsWith(expectedExtension)).map((e) => path.basename(e.path)).toList();
+        _log('7.1. Проверка... Текущие $expectedExtension файлы в загрузках: $currentFigFiles');
         logTimer.reset();
       }
 
       for (final entity in entities) {
-        final isNewFigFile = entity is File &&
-            entity.path.endsWith('.fig') &&
+        final isNewFile = entity is File &&
+            entity.path.endsWith(expectedExtension) &&
             !filesBefore.contains(entity.path);
 
-        if (isNewFigFile) {
+        if (isNewFile) {
           final fileName = path.basename(entity.path);
+          
+          final isBranch = item.branchName != null && item.branchName!.isNotEmpty;
+          final expectedName = isBranch ? item.branchName! : item.mainFileName;
+
           // Проверяем, что имя скачанного файла начинается с имени нашего файла,
           // чтобы избежать путаницы. Это надежнее, чем contains().
-          if (fileName.startsWith(_sanitizeName(item.mainFileName))) {
-            _log('Найден корректный файл .fig: $fileName');
+          if (fileName.startsWith(_sanitizeName(expectedName))) {
+            _log('Найден корректный файл $expectedExtension: $fileName');
             await Future.delayed(const Duration(seconds: 2));
             return entity;
           }

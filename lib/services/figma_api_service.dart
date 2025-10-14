@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:figma_bckp/models/figma_file.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import '../models/figma_file.dart';
+import 'package:figma_bckp/models/figma_branch.dart';
+import '../models/figma_url_info.dart';
 
 class FigmaApiService {
   final String apiBaseUrl = 'https://api.figma.com/v1';
@@ -11,21 +13,43 @@ class FigmaApiService {
   FigmaApiService() : _client = http.Client();
 
   Future<http.Response> _getWithTimeout(Uri uri, Map<String, String> headers) {
-    // Уменьшаем таймаут до 30 секунд, так как /meta должен отвечать быстро
-    return _client.get(uri, headers: headers).timeout(const Duration(seconds: 30));
+    // Увеличиваем таймаут до 90 секунд для поддержки больших файлов
+    return _client.get(uri, headers: headers).timeout(const Duration(seconds: 90));
   }
 
-  String? extractFileKey(String url) {
-    final uri = Uri.tryParse(url);
-    if (uri == null) return null;
-    if (uri.host != 'figma.com' && uri.host != 'www.figma.com') return null;
-    
-    final pathSegments = uri.pathSegments;
-    // --- ИЗМЕНЕНИЕ: Проверяем оба формата ссылок ---
-    if (pathSegments.length >= 2 && (pathSegments[0] == 'file' || pathSegments[0] == 'design')) {
-      return pathSegments[1];
+  FigmaUrlInfo? extractUrlInfo(String url) {
+    final regex = RegExp(
+        r'figma\.com\/(file|design|board|slides)\/([a-zA-Z0-9]+)(?:\/branch\/([a-zA-Z0-9]+))?');
+    final match = regex.firstMatch(url);
+
+    if (match == null) return null;
+
+    final typeString = match.group(1);
+    final fileKey = match.group(2);
+    final branchId = match.group(3);
+
+    if (fileKey == null) return null;
+
+    FigmaFileType fileType;
+    switch (typeString) {
+      case 'board':
+        fileType = FigmaFileType.figjam;
+        break;
+      case 'slides':
+        fileType = FigmaFileType.slides;
+        break;
+      case 'file':
+      case 'design':
+      default:
+        fileType = FigmaFileType.design;
+        break;
     }
-    return null;
+
+    return FigmaUrlInfo(
+      fileKey: fileKey,
+      fileType: fileType,
+      branchId: branchId,
+    );
   }
 
   Future<List<FigmaFile>> getFilesDetails(List<String> fileKeys, String token) async {
@@ -36,7 +60,11 @@ class FigmaApiService {
     for (String key in fileKeys) {
       debugPrint("[getFilesDetails] Processing key: $key");
       try {
-        final fileInfo = await getFullFileInfo(key, token);
+        // This method might need rethinking if we need to pass branch info here.
+        // For now, assuming it's just the file key.
+        final urlInfo = extractUrlInfo('https://www.figma.com/file/$key');
+        if (urlInfo == null) continue;
+        final fileInfo = await getFullFileInfo(urlInfo, token);
         successfullyFetchedFiles.add(fileInfo);
         debugPrint("[getFilesDetails] Successfully processed key: $key");
       } catch (e) {
@@ -47,33 +75,58 @@ class FigmaApiService {
     return successfullyFetchedFiles;
   }
 
-  Future<FigmaFile> getFullFileInfo(String fileKey, String token) async {
-    // ВОЗВРАЩАЕМ ПРАВИЛЬНЫЙ ЭНДПОИНТ /meta
-    final uri = Uri.parse('$apiBaseUrl/files/$fileKey/meta');
-    debugPrint("[getFullFileInfo] Requesting URL: $uri");
+  Future<FigmaFile> getFullFileInfo(FigmaUrlInfo urlInfo, String token) async {
+    final headers = {'X-Figma-Token': token};
 
     try {
-      final response = await _getWithTimeout(uri, {'X-Figma-Token': token});
-      debugPrint("[getFullFileInfo] Received response for key $fileKey with status: ${response.statusCode}");
+      // For branches, we need the main file name AND the branch name.
+      // The most efficient way is two parallel calls to the fast /meta endpoint.
+      if (urlInfo.branchId != null) {
+        final mainFileMetaUri = Uri.parse('$apiBaseUrl/files/${urlInfo.fileKey}/meta');
+        final branchMetaUri = Uri.parse('$apiBaseUrl/files/${urlInfo.branchId}/meta');
+        debugPrint("[getFullFileInfo] Requesting branch and main file meta in parallel: $mainFileMetaUri & $branchMetaUri");
 
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        // Модель FigmaFile.fromJson ожидает именно этот формат
-        final file = FigmaFile.fromJson(data)..key = fileKey;
+        final responses = await Future.wait([
+          _getWithTimeout(mainFileMetaUri, headers),
+          _getWithTimeout(branchMetaUri, headers),
+        ]);
+
+        final mainMetaResponse = responses[0];
+        final branchMetaResponse = responses[1];
+
+        if (mainMetaResponse.statusCode != 200) throw Exception('Ошибка Figma API (main meta). Статус: ${mainMetaResponse.statusCode}');
+        if (branchMetaResponse.statusCode != 200) throw Exception('Ошибка Figma API (branch meta). Статус: ${branchMetaResponse.statusCode}');
+
+        final mainMetaData = json.decode(mainMetaResponse.body);
+        final branchMetaData = json.decode(branchMetaResponse.body);
+
+        final file = FigmaFile.fromJson(branchMetaData['file']) // Base info from branch
+          ..key = urlInfo.fileKey // IMPORTANT: Always use the main file key for navigation
+          ..name = mainMetaData['file']['name'] // Overwrite name with the main file's name
+          ..fileType = urlInfo.fileType
+          ..branchName = branchMetaData['file']['name']; // The branch's name is the "name" from this response
+
         return file;
-      } else if (response.statusCode == 403) {
-        throw Exception('Неверный API токен или нет доступа к файлу.');
-      } else if (response.statusCode == 404) {
-        throw Exception('Файл с ключом $fileKey не найден.');
       } else {
-        throw Exception('Ошибка Figma API. Статус: ${response.statusCode}, Тело: ${response.body}');
+        // For all other file types, a single call is enough.
+        final metaUri = Uri.parse('$apiBaseUrl/files/${urlInfo.fileKey}/meta');
+        debugPrint("[getFullFileInfo] Requesting single meta URL for ${urlInfo.fileType}: $metaUri");
+
+        final metaResponse = await _getWithTimeout(metaUri, headers);
+        if (metaResponse.statusCode != 200) throw Exception('Ошибка Figma API (meta). Статус: ${metaResponse.statusCode}');
+
+        final metaData = json.decode(metaResponse.body);
+        final file = FigmaFile.fromJson(metaData['file'])
+          ..key = urlInfo.fileKey
+          ..fileType = urlInfo.fileType;
+        return file;
       }
     } on TimeoutException {
-      debugPrint("[getFullFileInfo] Timeout for key $fileKey");
-      throw Exception('Тайм-аут запроса к Figma API для файла $fileKey.');
+      debugPrint("[getFullFileInfo] Timeout for key ${urlInfo.fileKey}");
+      throw Exception('Тайм-аут запроса к Figma API для файла ${urlInfo.fileKey}.');
     } catch (e) {
-      debugPrint("[getFullFileInfo] Generic error for key $fileKey: $e");
-      throw Exception('An error occurred for $fileKey: $e');
+      debugPrint("[getFullFileInfo] Generic error for key ${urlInfo.fileKey}: $e");
+      rethrow;
     }
   }
 }

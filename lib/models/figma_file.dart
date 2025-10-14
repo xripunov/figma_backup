@@ -1,53 +1,62 @@
-// lib/models/figma_file.dart
-
-import 'dart:convert';
+import 'package:figma_bckp/models/figma_url_info.dart';
 
 class FigmaFile {
   String key;
-  final String name;
-  final String lastModified;
-  final String projectName; // <-- НОВОЕ ПОЛЕ
+  String name;
+  String lastModified;
+  String projectName;
+  FigmaFileType fileType;
+  String? branchId;
+  String? branchName;
 
   FigmaFile({
     required this.key,
     required this.name,
     required this.lastModified,
-    required this.projectName, // <-- ОБНОВЛЯЕМ КОНСТРУКТОР
+    required this.projectName,
+    this.fileType = FigmaFileType.design,
+    this.branchId,
+    this.branchName,
   });
 
-  // Конструктор для парсинга ответа от Figma API (.../meta)
   factory FigmaFile.fromJson(Map<String, dynamic> json) {
-    // Данные теперь вложены в ключ "file"
-    final fileData = json['file'];
+    // Data from the main /files/:key endpoint is the document object itself
+    // Data from the /meta endpoint is nested in json['file']
+    final fileData = json.containsKey('file') ? json['file'] : json;
     if (fileData == null) throw Exception('Invalid API response structure');
 
     return FigmaFile(
-      key: '', // Ключ будет установлен позже
+      key: '', // Key is set later
       name: fileData['name'] ?? 'Без имени',
-      // API /meta отдает 'last_touched_at'
-      lastModified: fileData['last_touched_at'] ?? '',
-      // API /meta отдает 'folder_name'
-      projectName: fileData['folder_name'] ?? 'Без проекта',
+      lastModified: json['last_touched_at'] ?? '', // From /meta response
+      projectName: fileData['folder_name'] ?? '', // From /meta response, might be empty
     );
   }
 
-  // Конструктор для парсинга из нашего кэша
   factory FigmaFile.fromJsonCache(Map<String, dynamic> json) {
     return FigmaFile(
       key: json['key'] ?? '',
       name: json['name'] ?? 'Без имени',
       lastModified: json['lastModified'] ?? '',
-      projectName: json['projectName'] ?? 'Без проекта', // <-- ДЛЯ КЭША
+      projectName: json['projectName'] ?? 'Без проекта',
+      fileType: FigmaFileType.values.firstWhere(
+        (e) => e.toString() == json['fileType'],
+        orElse: () => FigmaFileType.design,
+      ),
+      branchId: json['branchId'],
+      branchName: json['branchName'],
     );
   }
 
-  // Метод для преобразования объекта в Map для сохранения в кэш
   Map<String, dynamic> toJson() {
     return {
       'key': key,
       'name': name,
       'lastModified': lastModified,
-      'projectName': projectName, // <-- ДЛЯ КЭША
+      'projectName': projectName,
+      'fileType': fileType.toString(),
+      'branchId': branchId,
+      'branchName': branchName,
     };
   }
 }

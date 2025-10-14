@@ -61,6 +61,12 @@ class PuppeteerService {
         '--disable-setuid-sandbox',
       ];
 
+  List<String> get _stealthChromeArgs => [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled',
+      ];
+
   Future<void> _initProfilePath() async {
     final appSupportDir = await getApplicationSupportDirectory();
     _profilePath = path.join(appSupportDir.path, 'figma_profile');
@@ -118,7 +124,7 @@ class PuppeteerService {
       loginBrowser = await puppeteer.launch(
           executablePath: _getChromiumPath(),
           userDataDir: _profilePath,
-          args: _chromeArgs,
+          args: _stealthChromeArgs,
           headless: false,
           defaultViewport: null);
       final page = await loginBrowser.newPage();

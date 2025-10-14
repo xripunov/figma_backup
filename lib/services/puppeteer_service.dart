@@ -24,7 +24,7 @@ class PuppeteerService {
   void resetCancellation() => _cancellationToken.value = false;
   bool get isCancelled => _cancellationToken.value;
 
-  late final String _profilePath;
+  String? _profilePath;
   final _random = Random();
 
   final String _userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
@@ -68,13 +68,14 @@ class PuppeteerService {
       ];
 
   Future<void> _initProfilePath() async {
+    if (_profilePath != null) return; // Инициализируем только один раз
     final appSupportDir = await getApplicationSupportDirectory();
     _profilePath = path.join(appSupportDir.path, 'figma_profile');
     _log('Профиль браузера: $_profilePath');
 
     final lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
     for (final lockFileName in lockFiles) {
-      final lockFile = File(path.join(_profilePath, lockFileName));
+      final lockFile = File(path.join(_profilePath!, lockFileName));
       if (await lockFile.exists()) {
         _log('Найден старый lock-файл: $lockFileName. Удаляем...');
         try {
@@ -122,12 +123,15 @@ class PuppeteerService {
     Browser? loginBrowser;
     try {
       loginBrowser = await puppeteer.launch(
-          executablePath: _getChromiumPath(),
-          userDataDir: _profilePath,
-          args: _stealthChromeArgs,
-          headless: false,
-          defaultViewport: null);
+        executablePath: _getChromiumPath(),
+        userDataDir: _profilePath,
+        args: _stealthChromeArgs,
+        headless: false,
+        defaultViewport: null,
+        ignoreDefaultArgs: ['--enable-automation'], // <--- Самое важное изменение
+      );
       final page = await loginBrowser.newPage();
+
       await page.goto('https://www.figma.com', wait: Until.domContentLoaded);
       
       _log('Требуется ручной вход. Пожалуйста, войдите в аккаунт в открывшемся окне. Приложение продолжит автоматически.');
@@ -415,7 +419,11 @@ class PuppeteerService {
     try {
       // Убедимся, что путь инициализирован
       await _initProfilePath();
-      final profileDir = Directory(_profilePath);
+      if (_profilePath == null) {
+        _log('Путь к профилю не удалось определить.');
+        return false;
+      }
+      final profileDir = Directory(_profilePath!);
       if (await profileDir.exists()) {
         _log('Удаляем профиль браузера...');
         await profileDir.delete(recursive: true);

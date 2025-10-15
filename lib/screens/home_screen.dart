@@ -368,15 +368,11 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
 
-    if (result != null) {
-      setState(() {
-        final groupIndex = _groups.indexWhere((g) => g.id == _activeGroup!.id);
-        if (groupIndex != -1) {
-          _groups[groupIndex] = _activeGroup!.copyWith(automationSettings: result);
-          _activeGroup = _groups[groupIndex];
-        }
-      });
-      _saveGroupsDebounced();
+    if (result != null && mounted) {
+      await _settingsService.updateAutomationSettings(_activeGroup!.id, result);
+      // Reload data to reflect the change from the service, which might
+      // disable automation if the launchd task fails.
+      await _loadInitialData();
     }
   }
 

@@ -222,7 +222,7 @@ class PuppeteerService {
 
           _log('1. Перехожу к файлу: $fileUrl');
           try {
-            await page.goto(fileUrl, wait: Until.domContentLoaded, timeout: const Duration(minutes: 3));
+            await page.goto(fileUrl, wait: Until.domContentLoaded, timeout: const Duration(minutes: 5));
           } catch (e, s) {
             _log('!!! Ошибка навигации page.goto(): $e\n$s');
             rethrow;
@@ -362,7 +362,7 @@ class PuppeteerService {
         }
         if (isCancelled) break; // Добавлена проверка
         _log('Перезагружаем страницу и ждем 5 секунд перед повторной попыткой...');
-        await page.reload(wait: Until.networkIdle, timeout: const Duration(minutes: 2));
+        await page.reload(wait: Until.networkIdle, timeout: const Duration(minutes: 5));
         await Future.delayed(const Duration(seconds: 5)); 
       }
     }
@@ -370,7 +370,7 @@ class PuppeteerService {
   }
 
   Future<File> _waitForNewFile(Directory dir, Set<String> filesBefore, BackupItem item) async {
-    const timeout = Duration(minutes: 2);
+    const timeout = Duration(minutes: 10);
     final stopwatch = Stopwatch()..start();
     var logTimer = Stopwatch()..start();
     final expectedExtension = _getExtensionForItem(item);

@@ -17,29 +17,29 @@ samples, guidance on mobile development, and a full API reference.
 
 ---
 
-## Сборка DMG для macOS
+## Building a DMG for macOS
 
-Инструкция по созданию установочного DMG-образа для распространения приложения.
+Follow these steps to create a DMG installer for distributing the application.
 
-### 1. Установка зависимостей
+### 1. Install dependencies
 
-Убедитесь, что у вас установлен [Homebrew](https://brew.sh/). Затем установите утилиту `create-dmg`:
+Make sure [Homebrew](https://brew.sh/) is installed, then install the `create-dmg` utility:
 
 ```bash
 brew install create-dmg
 ```
 
-### 2. Сборка Flutter-приложения
+### 2. Build the Flutter application
 
-Соберите релизную версию macOS-приложения:
+Build the release version of the macOS application:
 
 ```bash
 flutter build macos
 ```
 
-### 3. Создание DMG-образа
+### 3. Create the DMG image
 
-Выполните следующую команду из корня проекта, чтобы создать стилизованный DMG-образ с иконкой приложения и ссылкой на папку "Программы":
+Run the following command from the project root to create a customized DMG image with the application icon and a shortcut to the Applications folder:
 
 ```bash
 create-dmg \
@@ -55,46 +55,46 @@ create-dmg \
   "build/macos/Build/Products/Release/figma_bckp.app"
 ```
 
-Готовый файл `Figma_Bckp.dmg` будет находиться в папке `build`.
+The generated `Figma_Bckp.dmg` file will be in the `build` folder.
 
 ---
 
-## Установка и первый запуск
+## Installation and First Launch
 
-После создания DMG-образа, его можно использовать для установки приложения.
+Once the DMG image has been created, use it to install the application.
 
-1.  Откройте `Figma_Bckp.dmg`.
-2.  Перетащите `figma_bckp.app` в папку `Applications` (Программы).
-3.  **Важно:** macOS может блокировать запуск приложений от неустановленных разработчиков. Чтобы снять это ограничение, откройте Терминал и выполните команду:
+1. Open `Figma_Bckp.dmg`.
+2. Drag `figma_bckp.app` into the `Applications` folder.
+3. **Important:** macOS may block applications from unidentified developers. To remove the quarantine attributes, open Terminal and run:
 
     ```bash
     xattr -cr /Applications/figma_bckp.app
     ```
 
-После этого приложение будет запускаться без предупреждений системы безопасности.
+This removes the quarantine attributes that can trigger macOS security warnings when launching the application.
 
 ---
 
-## Технические детали сборки под macOS
+## macOS Build Details
 
-Этот раздел описывает ключевые технические решения, принятые для корректной работы приложения в среде macOS.
+This section describes the key technical decisions made to ensure the application works correctly on macOS.
 
-### 1. Запуск Chromium
+### 1. Launching Chromium
 
-Приложение не использует системный Google Chrome. Вместо этого оно запускает собственную, изолированную копию **Chromium**, которая вкомпилирована внутрь пакета `.app`. Запуск происходит из Dart-кода (`puppeteer_service.dart`) с помощью библиотеки `puppeteer`. Путь к исполняемому файлу Chromium находится внутри самого пакета, что гарантирует предсказуемую среду выполнения.
+The application does not use the system installation of Google Chrome. Instead, it launches its own isolated copy of **Chromium**, bundled inside the `.app` package. Chromium is launched from Dart code (`puppeteer_service.dart`) using the `puppeteer` library. Its executable is located inside the application bundle to provide a predictable runtime environment.
 
-### 2. Разрешения и песочница (Sandbox)
+### 2. Permissions and Sandboxing
 
-Для обеспечения бесперебойной работы (скачивание файлов, управление браузером) песочница (sandbox) полностью отключена на двух уровнях:
+To support file downloads and browser control, sandboxing is disabled at both the application and browser levels:
 
-*   **На уровне приложения (macOS Sandbox):** В файле `Release.entitlements` ключ `com.apple.security.app-sandbox` установлен в `false`. Это снимает с приложения системные ограничения macOS.
-*   **На уровне браузера (Chromium Sandbox):** В коде принудительно передаются аргументы `--no-sandbox` и `--disable-setuid-sandbox` при запуске Chromium, что отключает его внутреннюю песочницу.
-*   **Наследование разрешений:** Флаг `com.apple.security.inherit: true` в `.entitlements` позволяет дочернему процессу (Chromium) наследовать "беспесочный" режим от основного приложения.
+- **Application level (macOS Sandbox):** In `Release.entitlements`, the `com.apple.security.app-sandbox` key is set to `false`, disabling the macOS App Sandbox restrictions.
+- **Browser level (Chromium Sandbox):** Chromium is launched with the `--no-sandbox` and `--disable-setuid-sandbox` arguments, disabling its internal sandbox.
+- **Permission inheritance:** The `com.apple.security.inherit: true` flag in the `.entitlements` file is intended to let the child process (Chromium) inherit the main application's sandbox configuration.
 
-### 3. Сборка проекта в Xcode
+### 3. Building the Project in Xcode
 
-В настройках сборки Xcode (`project.pbxproj`) добавлен специальный скрипт **"Copy Chromium"**. Он рекурсивно копирует `Chromium.app` из папки `assets` проекта в финальный пакет приложения (`.app/Contents/Frameworks/App.framework/Resources/flutter_assets/assets/chromium/`), делая его доступным для запуска из Dart-кода.
+The Xcode build settings (`project.pbxproj`) include a custom **"Copy Chromium"** script. It recursively copies `Chromium.app` from the project's `assets` folder into the final application bundle (`.app/Contents/Frameworks/App.framework/Resources/flutter_assets/assets/chromium/`), making it available to the Dart code.
 
-### 4. Удаление атрибута карантина
+### 4. Removing Quarantine Attributes
 
-В процессе сборки выполняется еще один важный скрипт — **"Remove Quarantine Attribute"** (`xattr -cr ...`). Он принудительно снимает с финального пакета `.app` метку `com.apple.quarantine`, которую macOS Gatekeeper добавляет файлам, скачанным из интернета. Это предотвращает появление системного диалогового окна "Вы уверены, что хотите запустить это приложение?" при первом запуске, делая работу программы более гладкой для пользователя.
+The build process also runs a **"Remove Quarantine Attribute"** script (`xattr -cr ...`). It removes the `com.apple.quarantine` attribute from the final `.app` bundle. macOS Gatekeeper uses this attribute for files downloaded from the internet. Removing it is intended to prevent the "Are you sure you want to open this application?" dialog on first launch.
